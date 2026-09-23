@@ -1,0 +1,24 @@
+# Artefatos de build (PyInstaller) -- regenerados por iso2631-5.spec
+build/
+dist/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Artefatos de compilacao do LaTeX (mantemos .tex e .pdf)
+*.aux
+*.log
+*.out
+*.toc
+
+# Editores/SO
+.vscode/
+*.swp
+Thumbs.db
+
+# Estado local do Claude Code (nao faz parte do projeto)
+.claude/
