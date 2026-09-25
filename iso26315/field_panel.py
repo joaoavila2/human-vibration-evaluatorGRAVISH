@@ -387,6 +387,7 @@ class FieldPanel(QWidget):
             'Dashboard: every criterion against its bands',
             'Side by side: this software vs lab method, per axis',
             'Contribution of each hour to the daily A(8)',
+            'Waveform: raw amplitude vs time',
         ])
         self.kind.currentIndexChanged.connect(self.redraw)
         ctl.addWidget(self.kind, 1)
@@ -891,6 +892,48 @@ class FieldPanel(QWidget):
         ax.legend(fontsize=8, loc='upper left')
         self.plot.finish(ax)
 
+    def _draw_waveform(self):
+        """Amostra a amostra, nao RMS por bloco -- util pra inspecionar
+        visualmente um teste de bancada (choque, pico saturando, ruido)."""
+        d = self.day
+        ax, = self.plot.axes()
+        n_blocks, n_samples, _ = d.blocks.shape
+        dt = d.dt
+
+        within = np.arange(n_samples) * dt
+        t = (d.seconds[:, None] - d.seconds[0]) + within[None, :]
+        t_flat = t.reshape(-1)
+        amp_flat = d.blocks.reshape(-1, 3)
+
+        if n_blocks > 1:
+            # mesma logica do Timeline (k==0): corta a linha entre blocos com
+            # lacuna real, pra nao desenhar uma diagonal ligando pontos que
+            # nao foram medidos entre eles.
+            gap = np.diff(d.seconds) > fd.BLOCK_PERIOD * 1.5
+            if gap.any():
+                breaks = (np.flatnonzero(gap) + 1) * n_samples
+                t_flat = np.insert(t_flat, breaks, np.nan)
+                amp_flat = np.insert(amp_flat, breaks, np.nan, axis=0)
+
+        total = n_blocks * n_samples
+        MAX_POINTS = 400_000
+        stride = max(1, total // MAX_POINTS)
+        if stride > 1:
+            t_flat = t_flat[::stride]
+            amp_flat = amp_flat[::stride]
+
+        for c, name in enumerate(core.AXIS_NAMES):
+            ax.plot(t_flat, amp_flat[:, c], lw=0.5, color=AXIS_COLORS[c],
+                   label=name)
+        ax.set_xlabel('Time since first block [s]')
+        ax.set_ylabel('Amplitude [m/s$^2$]')
+        title = f'{total:,} raw samples'
+        if stride > 1:
+            title += f' (decimated 1:{stride} for display)'
+        ax.set_title(title)
+        ax.legend(fontsize=8, ncol=3)
+        self.plot.finish(ax)
+
     def _draw_hours(self):
         rows = self.hours_rows
         ax, = self.plot.axes()
@@ -1159,6 +1202,9 @@ class FieldPanel(QWidget):
             return
         if k == 5:
             self._draw_hours()
+            return
+        if k == 6:
+            self._draw_waveform()
             return
 
         ax, = self.plot.axes()

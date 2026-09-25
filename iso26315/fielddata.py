@@ -412,9 +412,13 @@ def read_csv_accel(path, rate, columns=('AX', 'AY', 'AZ'), time_column='Time_ms'
     n_total = len(accel_g)
     n_blocks = n_total // BLOCK_SAMPLES
     if n_blocks == 0:
+        faltam_s = (BLOCK_SAMPLES - n_total) / rate
+        total_necessario_s = BLOCK_SAMPLES / rate
         raise ValueError(
             f'{path.name}: so {n_total} amostra(s), menos que as '
-            f'{BLOCK_SAMPLES} de um bloco -- arquivo curto demais pra analisar')
+            f'{BLOCK_SAMPLES} de um bloco. Na taxa informada ({rate:g} Hz), '
+            f'precisa de pelo menos {total_necessario_s:.1f} s de gravacao '
+            f'(faltam ~{faltam_s:.1f} s neste arquivo) -- grave mais tempo')
 
     counts = (accel_g[:n_blocks * BLOCK_SAMPLES] * LSB_PER_G).reshape(
         n_blocks, BLOCK_SAMPLES, 3)
