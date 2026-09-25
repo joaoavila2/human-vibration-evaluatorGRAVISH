@@ -53,6 +53,12 @@ WEIGHTINGS = [None] + list(_PARAMS)
 def _filters(name, fs):
     f1, f2, f3, f4, f5, f6, q4, q5, q6 = _PARAMS[name]
     nyq = fs / 2
+    if nyq <= f2:
+        raise ValueError(
+            f'Sample rate too low for the "{name}" weighting filter: it needs '
+            f'frequencies up to {f2:g} Hz, which requires a sample rate above '
+            f'{2 * f2:g} Hz (Nyquist). Got {fs:g} Hz. Check the sample rate '
+            f'entered for this recording.')
     w3, w4, w5, w6 = (2 * np.pi * f for f in (f3, f4, f5, f6))
     out = [butter(2, f2 / nyq), butter(2, f1 / nyq, 'high')]
     if np.isfinite(w4):

@@ -30,6 +30,7 @@ from .qtworker import Worker
 from .theme import (ACCENT, BAD_COLOR, BG_ALT, BORDER, HIGHLIGHT, OK_COLOR,
                     TEXT, WARN_COLOR, apply_theme)
 from .weighting_panel import WeightingPanel
+from ._version import __version__
 
 APP_NAME = 'Avaliador de Vibração Humana'
 SERIES_COLORS = ['#1f6feb', '#c2255c', '#1b7a33', '#b25c00', '#6741d9', '#0b7285']
@@ -215,7 +216,7 @@ def _legend(ax, base=8):
 class MainWindow(QMainWindow):
     def __init__(self, data_dir):
         super().__init__()
-        self.setWindowTitle(APP_NAME)
+        self.setWindowTitle(f'{APP_NAME} — v{__version__}')
         self.resize(1220, 830)
         self.store = core.TransferFunctionStore(data_dir)
         self.history = None
