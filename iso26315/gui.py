@@ -26,6 +26,7 @@ from .explorer import SignalExplorer
 from .field_explorer import FieldSignalExplorer
 from .field_panel import FieldPanel
 from .csv_import_panel import CsvImportPanel
+from .live_fft_panel import LiveFFTPanel
 from .qtworker import Worker
 from .theme import (ACCENT, BAD_COLOR, BG_ALT, BORDER, HIGHLIGHT, OK_COLOR,
                     TEXT, WARN_COLOR, apply_theme)
@@ -253,6 +254,8 @@ class MainWindow(QMainWindow):
         explorer_tabs.addTab(self.csv_import, 'Continuous CSV import')
         self.explorer_tabs = explorer_tabs
         tabs.addTab(explorer_tabs, 'Signal explorer')
+        self.live_fft = LiveFFTPanel(Plot, self.status)
+        tabs.addTab(self.live_fft, 'Live FFT (Xiao)')
         self.tabs = tabs
         self._tabs_shown = False
         self.setCentralWidget(tabs)
