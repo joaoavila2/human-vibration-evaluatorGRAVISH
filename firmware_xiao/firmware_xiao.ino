@@ -1,27 +1,30 @@
 #include <SPI.h>
-#include <SD.h>
+#include <SdFat.h>
 #include <Wire.h>
 #include <ThreeWire.h>
 #include <RtcDS1302.h>
+#include <LSM6DS3.h>
 
 // ==========================================
 // CONFIGURACOES DE PINOS E ENDERECOS
 // ==========================================
-const int chipSelectSD = 3;
+// D7 confirmado por teste real (sketch de referencia a 10Hz que gravou com
+// sucesso). Se a fiacao mudar, atualizar aqui.
+const int chipSelectSD = 7;
 
 ThreeWire myWire(1, 2, 0);           // DAT, CLK, RST
 RtcDS1302<ThreeWire> Rtc(myWire);
 
-const uint8_t LSM6DS3_ADDR = 0x6A;
-const uint8_t CTRL1_XL     = 0x10;
-const uint8_t STATUS_REG   = 0x1E;   // bit0 = XLDA (novo dado do acelerometro pronto)
-const uint8_t OUTX_L_XL    = 0x28;
+SdFs SD;          // SdFs detecta FAT16/32 e exFAT automaticamente
+FsFile arquivoLog;
 
-// CTRL1_XL: ODR_XL[7:4] | FS_XL[3:2] | LPF2[1] | 0
-// ODR 416Hz = 0110. CUIDADO: no LSM6DS3 a ordem de FS_XL NAO e 2/4/8/16g crescente
-// (00=2g, 01=16g, 10=4g, 11=8g) -- confira no datasheet antes de trocar.
-// Aqui: 0110 11 0 0 = 0x6C -> ODR 416Hz, FS +-8g (11).
-const uint8_t CTRL1_XL_CONFIG = 0x6C;
+// Acesso a IMU via biblioteca SparkFun (nao registro cru via Wire1): testes
+// isolados mostraram que uma transacao I2C real (nao so probe de endereco)
+// trava usando Wire1 diretamente nesta placa. A biblioteca e' o mesmo
+// caminho usado no sketch de referencia que gravou com sucesso, entao evita
+// esse problema por completo em vez de tentar consertar o acesso cru.
+LSM6DS3 imu(I2C_MODE, 0x6A);
+
 const uint8_t FULL_SCALE_G    = 8;
 const uint16_t SAMPLE_RATE_HZ = 416;
 
@@ -83,7 +86,6 @@ uint8_t contadorBuffersDesdeFlush = 0;
 // nao para no meio do dado (ver nota no passo 3 do loop()).
 uint32_t amostrasDescartadas = 0;
 
-File arquivoLog;
 unsigned long startMicros = 0;
 
 // ==========================================
@@ -113,7 +115,7 @@ void abrirNovoArquivo() {
 
   arquivoLog = SD.open(nome, FILE_WRITE);
   if (!arquivoLog) {
-    Serial.println("Falha ao abrir novo arquivo!");
+    if (Serial) Serial.println("Falha ao abrir novo arquivo!");
     while (1);
   }
 
@@ -143,76 +145,110 @@ void abrirNovoArquivo() {
 // ==========================================
 void setup() {
   Serial.begin(115200);
+  // Espera ate 3s o monitor serial conectar (USB nativo do nRF52840 -- se
+  // esperasse pra sempre, no campo sem PC conectado o firmware nunca sairia
+  // do setup()). Passado o timeout, segue mesmo sem monitor aberto. Todo
+  // print daqui pra frente fica atras de "if (Serial)": escrever num USB
+  // CDC sem host do outro lado pode enfileirar e travar o loop rodando so
+  // na bateria.
+  unsigned long t0 = millis();
+  while (!Serial && (millis() - t0) < 3000) delay(10);
 
-  Rtc.Begin();
-  if (!Rtc.GetIsRunning()) Rtc.SetIsRunning(true);
+  if (Serial) Serial.println("== boot ==");
 
-  if (!SD.begin(chipSelectSD)) {
-    Serial.println("Falha no SD!");
+  pinMode(LED_BUILTIN, OUTPUT);
+  digitalWrite(LED_BUILTIN, HIGH);  // apagado (LED onboard e ativo em LOW)
+
+  // A IMU embarcada do XIAO Sense fica DESLIGADA por padrao, controlada por
+  // este pino. Sem isso, mesmo com I2C/fiacao perfeitos, ela nao responde.
+  pinMode(PIN_LSM6DS3TR_C_POWER, OUTPUT);
+  digitalWrite(PIN_LSM6DS3TR_C_POWER, HIGH);
+  delay(100);
+  if (Serial) Serial.println("IMU alimentada");
+
+  // SD antes do RTC -- nao ha dependencia logica entre os dois (o RTC so e
+  // lido de fato dentro de abrirNovoArquivo(), mais adiante). Retry + clock
+  // baixo (1 MHz) porque cartao/fiacao podem nao estar "assentados" logo
+  // apos ligar, principalmente na bateria -- mesmo padrao do teste que
+  // funcionou.
+  bool sdOk = false;
+  for (int tentativa = 1; tentativa <= 5 && !sdOk; tentativa++) {
+    sdOk = SD.begin(chipSelectSD, SD_SCK_MHZ(1));
+    if (!sdOk) delay(300);
+  }
+  if (!sdOk) {
+    if (Serial) {
+      Serial.println("Falha no SD! (checar CS, fiacao, cartao)");
+      SD.initErrorPrint(&Serial);  // motivo detalhado: cartao vs filesystem
+    }
     while (1);
   }
+  if (Serial) Serial.println("SD ok");
 
-  Wire.begin();
-  Wire.setClock(400000);
+  Rtc.Begin();
+  if (Serial) Serial.println("RTC iniciado");
+  if (!Rtc.GetIsRunning()) Rtc.SetIsRunning(true);
 
-  Wire.beginTransmission(LSM6DS3_ADDR);
-  Wire.write(CTRL1_XL);
-  Wire.write(CTRL1_XL_CONFIG);
-  Wire.endTransmission();
+  // Configura ODR/faixa ANTES de imu.begin() -- a biblioteca aplica esses
+  // valores durante o begin(). Valores validos de accelSampleRate: 13, 26,
+  // 52, 104, 208, 416, 833, 1660, 3330, 6660 (Hz). accelRange: 2, 4, 8, 16 (g).
+  imu.settings.accelSampleRate = SAMPLE_RATE_HZ;
+  imu.settings.accelRange = FULL_SCALE_G;
+  imu.settings.gyroEnabled = 0;  // nao usamos giroscopio, desliga pra economizar
+
+  if (imu.begin() != 0) {
+    if (Serial) Serial.println("Falha ao iniciar a IMU!");
+    while (1);
+  }
+  if (Serial) Serial.println("IMU configurada");
 
   calcularIndiceInicial();  // unica varredura do cartao, feita so aqui
+  if (Serial) Serial.println("Indice de arquivo calculado, abrindo primeiro arquivo...");
   abrirNovoArquivo();
+  if (Serial) Serial.println("Gravando.");
+
+  // Sinal de "pronto" visivel sem Serial Monitor: 3 piscadas de 1s.
+  for (int i = 0; i < 3; i++) {
+    digitalWrite(LED_BUILTIN, LOW);
+    delay(1000);
+    digitalWrite(LED_BUILTIN, HIGH);
+    delay(1000);
+  }
 }
 
 // ==========================================
 // LOOP PRINCIPAL
 // ==========================================
 void loop() {
-  // 1. CHECA SE HA DADO NOVO ANTES DE LER (evita duplicar/pular amostra)
-  Wire.beginTransmission(LSM6DS3_ADDR);
-  Wire.write(STATUS_REG);
-  Wire.endTransmission(false);
-  Wire.requestFrom(LSM6DS3_ADDR, (uint8_t)1);
-  if (Wire.available() != 1) return;
-  uint8_t status = Wire.read();
-  if (!(status & 0x01)) return;  // XLDA = 0, ainda nao tem amostra nova
-
-  // 2. LEITURA EM BLOCO DOS 6 BYTES
-  Wire.beginTransmission(LSM6DS3_ADDR);
-  Wire.write(OUTX_L_XL);
-  Wire.endTransmission(false);
-  Wire.requestFrom(LSM6DS3_ADDR, (uint8_t)6);
-
-  if (Wire.available() == 6) {
-    // 2b. GUARDA DE COLISAO: se o buffer de leitura atual ainda esta marcado
-    // como "pronto para o SD" (ou seja, o buffer PARCEIRO ainda nao foi
-    // consumido), nao empilha amostra nova -- descarta e espera.
-    // Na arquitetura atual (escrita 100% bloqueante dentro do proprio loop(),
-    // ver passo 4) isso nunca deve disparar, porque o loop() so volta pro
-    // passo 1 depois que a escrita anterior ja terminou. Mas se essa parte
-    // virar assincrona/DMA no futuro (proximo passo natural pra fechar o
-    // duty cycle de vez), essa guarda passa a ser o que evita ler por cima
-    // de um buffer que o SD ainda esta consumindo -- mais barato descartar
-    // 1 amostra do que corromper o alinhamento de 10 bytes do arquivo.
-    if (dadosProntosParaSD) {
-      amostrasDescartadas++;
-      return;
-    }
-
-    bufferLeitura[indiceLeitura].tempoMicros = (uint32_t)(micros() - startMicros);
-
-    uint8_t x_L = Wire.read(); uint8_t x_H = Wire.read();
-    uint8_t y_L = Wire.read(); uint8_t y_H = Wire.read();
-    uint8_t z_L = Wire.read(); uint8_t z_H = Wire.read();
-
-    bufferLeitura[indiceLeitura].x = (int16_t)(x_H << 8 | x_L);
-    bufferLeitura[indiceLeitura].y = (int16_t)(y_H << 8 | y_L);
-    bufferLeitura[indiceLeitura].z = (int16_t)(z_H << 8 | z_L);
-
-    indiceLeitura++;
+  // 0. HEARTBEAT: alterna o LED a cada 500ms, sem usar delay() (nao pode
+  // atrapalhar a taxa de amostragem). So serve pra provar visualmente que
+  // o loop() esta realmente rodando -- pisca = vivo, independente de qual
+  // nivel (HIGH/LOW) corresponde a "aceso" nessa placa.
+  static unsigned long ultimoPisca = 0;
+  static bool estadoLed = false;
+  if (millis() - ultimoPisca >= 500) {
+    ultimoPisca = millis();
+    estadoLed = !estadoLed;
+    digitalWrite(LED_BUILTIN, estadoLed);
   }
 
-  // 3. TROCA DE BUFFER
+  // 1. LEITURA DIRETA (a biblioteca cuida da transacao I2C internamente).
+  // Sem checagem de data-ready por enquanto -- a leitura crua troca menos
+  // que 1ms tipicamente, bem abaixo do periodo de 2,4ms a 416Hz, entao nao
+  // deve duplicar amostra na pratica. Se precisar do data-ready de volta,
+  // da pra usar imu.readRegister() no STATUS_REG (0x1E) igual antes, mas
+  // testar separado primeiro pra nao reintroduzir o travamento.
+  if (!dadosProntosParaSD) {
+    bufferLeitura[indiceLeitura].tempoMicros = (uint32_t)(micros() - startMicros);
+    bufferLeitura[indiceLeitura].x = imu.readRawAccelX();
+    bufferLeitura[indiceLeitura].y = imu.readRawAccelY();
+    bufferLeitura[indiceLeitura].z = imu.readRawAccelZ();
+    indiceLeitura++;
+  } else {
+    amostrasDescartadas++;
+  }
+
+  // 2. TROCA DE BUFFER
   if (indiceLeitura >= TAMANHO_BUFFER) {
     bufferGravacao = bufferLeitura;
     bufferLeitura = (bufferLeitura == bufferA) ? bufferB : bufferA;
@@ -220,7 +256,7 @@ void loop() {
     dadosProntosParaSD = true;
   }
 
-  // 4. GRAVACAO NO SD (flush espacado, nao a cada buffer)
+  // 3. GRAVACAO NO SD (flush espacado, nao a cada buffer)
   if (dadosProntosParaSD) {
     arquivoLog.write((const uint8_t*)bufferGravacao, sizeof(PacoteDados) * TAMANHO_BUFFER);
 
@@ -229,10 +265,10 @@ void loop() {
       arquivoLog.flush();
       contadorBuffersDesdeFlush = 0;
     }
-    dadosProntosParaSD = false;   // libera a guarda do passo 2b
+    dadosProntosParaSD = false;
   }
 
-  // 5. ROTACAO DE ARQUIVO A CADA 1H (reseta referencia de tempo + resincroniza RTC)
+  // 4. ROTACAO DE ARQUIVO A CADA 1H (reseta referencia de tempo + resincroniza RTC)
   if ((uint32_t)(micros() - startMicros) >= INTERVALO_ROTACAO_US) {
     abrirNovoArquivo();
   }

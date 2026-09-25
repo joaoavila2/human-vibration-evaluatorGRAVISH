@@ -25,6 +25,7 @@ from .clause5_tab import ClauseFiveTab
 from .explorer import SignalExplorer
 from .field_explorer import FieldSignalExplorer
 from .field_panel import FieldPanel
+from .csv_import_panel import CsvImportPanel
 from .qtworker import Worker
 from .theme import (ACCENT, BAD_COLOR, BG_ALT, BORDER, HIGHLIGHT, OK_COLOR,
                     TEXT, WARN_COLOR, apply_theme)
@@ -245,6 +246,10 @@ class MainWindow(QMainWindow):
         explorer_tabs.addTab(self.explorer, 'ASCII records')
         explorer_tabs.addTab(self.field_explorer, 'Field logger records (.m)')
         explorer_tabs.addTab(self.field, 'Directive')
+        self.csv_import = CsvImportPanel(
+            self.field, self.status,
+            on_loaded=lambda: explorer_tabs.setCurrentWidget(self.field))
+        explorer_tabs.addTab(self.csv_import, 'Continuous CSV import')
         self.explorer_tabs = explorer_tabs
         tabs.addTab(explorer_tabs, 'Signal explorer')
         self.tabs = tabs

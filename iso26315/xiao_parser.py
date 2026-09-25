@@ -84,7 +84,13 @@ def parse_file(path) -> XiaoFile:
             f'{path.name}: assinatura inválida (0x{magic:08X}), '
             'arquivo corrompido ou formato errado')
 
-    start = datetime(ano, mes, dia, hora, minuto, segundo)
+    try:
+        start = datetime(ano, mes, dia, hora, minuto, segundo)
+    except ValueError as e:
+        raise ValueError(
+            f'{path.name}: cabeçalho com data inválida (ano={ano}, mes={mes}, dia={dia}, '
+            f'hora={hora}, min={minuto}, seg={segundo}) -- provável arquivo corrompido ou '
+            f'sobra de um teste anterior, não uma gravação válida ({e})') from e
 
     payload = raw[_HEADER_SIZE:]
     n_packets, resto = divmod(len(payload), _PACKET_SIZE)

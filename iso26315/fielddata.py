@@ -380,6 +380,79 @@ def load_day(paths, calibrate=False, rate=NOMINAL_RATE, progress=None,
                     rate=rate)
 
 
+def read_csv_accel(path, rate, columns=('AX', 'AY', 'AZ'), time_column='Time_ms'):
+    """Le um CSV de aceleracao continua (ja em g), tipo Time_ms,AX,AY,AZ --
+    formato de sketches de bancada, diferente do .m do registrador de campo.
+
+    Diferenca estrutural chave: aqui o fluxo e continuo, sem a lacuna de 3 s
+    a cada 5 s do registrador. Por isso NAO reaproveita os blocos do arquivo
+    (nao existem) -- fatia a serie em blocos de BLOCK_SAMPLES amostras
+    consecutivas, sem pular nada entre eles. duty_cycle sai ~1.0, o que e
+    correto para este tipo de dado.
+
+    rate precisa ser informado pelo usuario. O timestamp em ms do arquivo e
+    tipicamente so aproximado (jitter do loop de leitura), entao nao da pra
+    inferir a taxa de amostragem real so a partir dele com confianca.
+    """
+    import csv as csv_module
+
+    path = Path(path)
+    with open(path, newline='', encoding='utf-8', errors='replace') as f:
+        reader = csv_module.reader(f)
+        header = [h.strip() for h in next(reader)]
+        try:
+            idxs = [header.index(c) for c in columns]
+        except ValueError as e:
+            raise ValueError(
+                f'{path.name}: coluna esperada nao encontrada no cabecalho '
+                f'{header} ({e})') from e
+        rows = [[float(row[i]) for i in idxs] for row in reader if row]
+
+    accel_g = np.array(rows, dtype=np.float64)   # (n, 3), ja em g
+    n_total = len(accel_g)
+    n_blocks = n_total // BLOCK_SAMPLES
+    if n_blocks == 0:
+        raise ValueError(
+            f'{path.name}: so {n_total} amostra(s), menos que as '
+            f'{BLOCK_SAMPLES} de um bloco -- arquivo curto demais pra analisar')
+
+    counts = (accel_g[:n_blocks * BLOCK_SAMPLES] * LSB_PER_G).reshape(
+        n_blocks, BLOCK_SAMPLES, 3)
+    block_period = BLOCK_SAMPLES / rate
+    seconds = np.arange(n_blocks, dtype=float) * block_period
+
+    rec = FieldRecord(path=path, counts=counts, seconds=seconds, rate=rate)
+    dropped = n_total - n_blocks * BLOCK_SAMPLES
+    if dropped:
+        rec.notes.append(
+            f'{dropped} amostra(s) no final descartada(s) (sobra menor que '
+            f'um bloco de {BLOCK_SAMPLES})')
+    rec.gravity_axis = int(np.argmax(np.abs(rec.counts[0].mean(0))))
+    return rec
+
+
+def load_day_csv(paths, rate, position='seat', progress=None):
+    """Le um conjunto de CSVs continuos (Time_ms,AX,AY,AZ) como um dia.
+
+    Mesmo formato de retorno de load_day(), pra reusar sem alteracao todo o
+    resto do pipeline (criterios, graficos, A(8) por eixo etc.) -- so a
+    origem do dado muda.
+    """
+    recs, blocks, secs, occ = [], [], [], []
+    for i, p in enumerate(sorted(paths)):
+        if progress:
+            progress(i / max(len(paths), 1), f'Reading {Path(p).name}')
+        rec = read_csv_accel(p, rate=rate)
+        set_orientation(rec, rec.gravity_axis, position=position)
+        recs.append(rec)
+        blocks.append(rec.blocks_si())
+        secs.append(rec.seconds)
+        occ.append(occupancy_mask(rec))
+    return FieldDay(records=recs, blocks=np.concatenate(blocks),
+                    seconds=np.concatenate(secs), occupied=np.concatenate(occ),
+                    rate=rate)
+
+
 def reorient_day(day, position):
     """Refaz a orientacao dos registros de um dia sem reler os arquivos."""
     blocks = []
