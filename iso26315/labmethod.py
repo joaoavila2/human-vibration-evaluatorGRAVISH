@@ -17,6 +17,18 @@ Etapas reproduzidas:
                   exposicao fixa de 1 h; diario pela raiz da soma dos quadrados
 
 Os dois defeitos do VDV podem ser reproduzidos ou corrigidos.
+
+Mapeamento de eixo: LabConfig.axis_mode 'raw' e 'swap' reproduzem os dois
+estados do checkbox "Exchange x-z axis" do app literalmente (colunas na
+ordem do arquivo, ou colunas 1 e 3 trocadas -- sempre fixo, nunca olha a
+gravidade). 'auto' (padrao) detecta a coluna vertical pela gravidade em
+cada arquivo; e mais correto fisicamente, mas SO e igual ao app quando a
+gravidade calha de estar na coluna que 'raw' ou 'swap' assumem. Um valor de
+eixo que bate exatamente entre este software e o app noutro eixo mas diverge
+nesse e sinal de que a orientacao real do arquivo nao e a que 'auto' ou o
+estado do checkbox do app estao assumindo -- confira os dois modos fixos
+antes de suspeitar da ponderacao (Wc/Wd/Wk ja foram conferidos byte a byte
+contra Gera_Isofil.m, ver tests/).
 """
 from dataclasses import dataclass, field
 
@@ -68,9 +80,25 @@ def _weight(x, name, fs, cache):
 class LabConfig:
     weights: tuple = ('wc', None, None)      # eixos x, y, z do app
     k: tuple = (0.8, 1.0, 1.0)
-    force_fixed_axes: bool = False
+    # 'auto'  coluna vertical detectada pela gravidade em cada arquivo (o
+    #         criterio que fielddata.set_orientation tambem usa) -- NAO e o
+    #         que o app faz, e um aprimoramento deste software;
+    # 'raw'   colunas do arquivo na ordem em que estao (x=1, y=2, z=3), sem
+    #         nenhuma checagem de gravidade -- o app com "Exchange x-z axis"
+    #         DESMARCADO, seu estado padrao;
+    # 'swap'  troca fixa x<->z (colunas 3,2,1) -- o app com "Exchange x-z
+    #         axis" MARCADO.
+    # 'auto' e mais correto quando a orientacao varia entre arquivos, mas so
+    # 'raw'/'swap' reproduzem o app literalmente: ele nunca olha a
+    # gravidade, so o estado do checkbox.
+    axis_mode: str = 'auto'
     rms_time: float = 2.0
     reproduce_vdv_defects: bool = False
+
+    @property
+    def force_fixed_axes(self):
+        # Compatibilidade com o nome antigo (usado antes de existir 'raw').
+        return self.axis_mode == 'swap'
 
 
 @dataclass
@@ -85,19 +113,28 @@ class LabResult:
     display: list = None             # coluna do arquivo em cada eixo do app
 
 
-def _record_display(rec, force_fixed):
+def _record_display(rec, axis_mode):
     """Mapeamento eixo conceitual (x, y, z) -> coluna bruta do arquivo.
 
-    Por padrao, a coluna vertical e detectada pela gravidade em cada
-    arquivo (rec.gravity_axis), o mesmo criterio que a pipeline deste
-    software usa em fielddata.set_orientation. Uma regra fixa nao serve: a
-    orientacao muda entre campanhas e ate dentro de um mesmo dia (Secoes
-    10.8 e 10.10 da documentacao). force_fixed reproduz a troca x-z fixa
-    do app original do laboratorio, para auditar um resultado ja publicado
-    com aquela configuracao especifica (Secao 10.9).
+    O app original NUNCA olha a gravidade: ele so aplica a ponderacao as
+    colunas na ordem em que estao no arquivo (x=coluna 1, y=coluna 2, z=
+    coluna 3), a menos que "Exchange x-z axis" esteja marcado, caso em que
+    troca as colunas 1 e 3 -- sempre a mesma troca fixa, para todo arquivo,
+    non importa o que a gravidade diga. 'raw' e 'swap' reproduzem os dois
+    estados desse checkbox literalmente.
+
+    'auto' e um modo A MAIS, deste software: detecta a coluna vertical pela
+    gravidade em cada arquivo (rec.gravity_axis), o mesmo criterio de
+    fielddata.set_orientation. E mais correto quando a orientacao muda entre
+    arquivos ou dentro do mesmo dia (Secoes 10.8 e 10.10 da documentacao),
+    mas diverge do app sempre que a coluna com a gravidade nao for a mesma
+    que 'raw'/'swap' assumem -- por isso NAO reproduz o app, so se aproxima
+    dele quando a orientacao de fato bate com a suposicao fixa.
     """
-    if force_fixed:
+    if axis_mode == 'swap':
         return [2, 1, 0]
+    if axis_mode == 'raw':
+        return [0, 1, 2]
     grav = getattr(rec, 'gravity_axis', None)
     if grav is None:
         return [0, 1, 2]
@@ -123,7 +160,7 @@ def assess(records, cfg=LabConfig(), rate=fd.NOMINAL_RATE):
     for rec in records:
         # A troca x-z inverte a coluna que recebe cada ponderacao e a posicao
         # em que o resultado e exibido; determinada por arquivo, nao global.
-        display = _record_display(rec, cfg.force_fixed_axes)
+        display = _record_display(rec, cfg.axis_mode)
         axis_of_col = _axis_of_column(display)
         col_weight = {col: cfg.weights[axis_of_col[col]] for col in range(3)}
         k_col = k[axis_of_col]

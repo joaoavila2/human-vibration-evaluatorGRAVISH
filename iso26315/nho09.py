@@ -59,7 +59,11 @@ def _weighted_blocks(blocks, dt, pad_factor=3, weights=None):
     n_blk, n, _ = blocks.shape
     m = n * (1 + pad_factor)
     f = np.fft.rfftfreq(m, dt)
-    H = np.stack([core.weighting_response(w, f)
+    # None (usado pelas ponderacoes de saude do encosto/pe, que deixam y/z ou
+    # todos os eixos sem filtro) significa passagem direta: resposta 1 em
+    # toda a frequencia, o mesmo criterio que core._axis_gain ja usa.
+    H = np.stack([np.ones_like(f, dtype=complex) if w is None
+                  else core.weighting_response(w, f)
                   for w in (weights or WEIGHTS)], axis=1)   # (nf, 3)
     out = np.empty_like(blocks)
     step = 256                       # lotes de blocos: rapido sem estourar memoria

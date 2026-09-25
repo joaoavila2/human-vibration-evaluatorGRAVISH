@@ -913,8 +913,12 @@ HEALTH_WEIGHTING = {'x': ('Wd', 1.4), 'y': ('Wd', 1.4), 'z': ('Wk', 1.0)}
 WEIGHTING_PRESETS = {
     'None - unweighted (ISO 2631-5 requirement)':
         {'x': (None, 1.0), 'y': (None, 1.0), 'z': (None, 1.0)},
-    'ISO 2631-1 health - Wd/Wd/Wk, k = 1.4/1.4/1.0':
+    'ISO 2631-1 health, seat - Wd/Wd/Wk, k = 1.4/1.4/1.0':
         {'x': ('Wd', 1.4), 'y': ('Wd', 1.4), 'z': ('Wk', 1.0)},
+    'ISO 2631-1 health, backrest (informative, 7.2.3) - Wc, k = 0.8/1.0/1.0':
+        {'x': ('Wc', 0.8), 'y': (None, 1.0), 'z': (None, 1.0)},
+    'ISO 2631-1 health, feet (informative, not in the norm) - k = 1.0':
+        {'x': (None, 1.0), 'y': (None, 1.0), 'z': (None, 1.0)},
     'ISO 2631-1 comfort, seat pan - Wd/Wd/Wk, k = 1.0':
         {'x': ('Wd', 1.0), 'y': ('Wd', 1.0), 'z': ('Wk', 1.0)},
     'ISO 2631-1 comfort, backrest - Wc/Wd/Wd, k = 0.8/0.5/0.4':

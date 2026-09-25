@@ -63,15 +63,21 @@ def _classify(v, action, limit):
     return 'below the exposure action value'
 
 
-def assess(blocks, dt, exposure_hours, mode='highest'):
+def assess(blocks, dt, exposure_hours, mode='highest', weights=None, k=None):
     """Avaliacao pela diretiva.
 
     exposure_hours e o tempo de exposicao usado em A(8) = k a_w sqrt(t/8h) e no
     fator (t_exp/t_meas)^(1/4) do VDV. Para registros com ciclo de trabalho,
     o correto e o periodo coberto: a vibracao nao para nos intervalos em que o
     cartao nao grava.
+
+    weights/k sao None por padrao, ou seja Wd/Wd/Wk e FACTORES (1,4/1,4/1,0)
+    -- a definicao de A(8) da propria diretiva, valida so no assento. Um
+    chamador que precisa do mesmo formato de resultado para outra posicao
+    (encosto, pe, customizada) passa a ponderacao correta explicitamente;
+    isso NAO torna o resultado normativo, so reaproveita a formula.
     """
-    w = nho09.weighted_blocks(blocks, dt)
+    w = nho09.weighted_blocks(blocks, dt, weights=weights)
     aw = np.sqrt((w ** 2).mean(axis=(0, 1)))
     peak = np.abs(w).max(axis=(0, 1))
     crest = np.divide(peak, aw, out=np.zeros(3), where=aw > 0)
@@ -79,9 +85,10 @@ def assess(blocks, dt, exposure_hours, mode='highest'):
     t_meas = blocks.shape[0] * blocks.shape[1] * dt
     t_exp = exposure_hours * 3600.0
 
-    a8_axis = FACTORS * aw * np.sqrt(t_exp / (8 * 3600.0))
+    k_arr = FACTORS if k is None else np.asarray(k, dtype=float)
+    a8_axis = k_arr * aw * np.sqrt(t_exp / (8 * 3600.0))
     vdv_meas = (np.sum(w ** 4, axis=(0, 1)) * dt) ** 0.25
-    vdv_axis = FACTORS * vdv_meas * (t_exp / t_meas) ** 0.25
+    vdv_axis = k_arr * vdv_meas * (t_exp / t_meas) ** 0.25
 
     if mode == 'vector':
         a8 = float(np.sqrt(np.sum(a8_axis ** 2)))

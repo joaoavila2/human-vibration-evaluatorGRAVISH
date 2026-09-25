@@ -9,9 +9,9 @@ import numpy as np
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QGridLayout, QGroupBox,
-    QHBoxLayout, QHeaderView, QLabel, QMessageBox, QProgressBar, QPushButton,
-    QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QFileDialog, QGridLayout,
+    QGroupBox, QHBoxLayout, QHeaderView, QLabel, QMessageBox, QProgressBar,
+    QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from . import (core, directive, fielddata as fd, labmethod, nho09,
@@ -22,7 +22,7 @@ from .theme import ACCENT, BAD_COLOR, OK_COLOR, TEXT, WARN_COLOR
 AXIS_COLORS = ['#1f6feb', '#c2255c', '#1b7a33']
 
 
-def _prime(day, position, hours, cfg, criterion_idx, extra_hours):
+def _prime(day, position, hours, cfg, criterion_idx, extra_hours, custom=None):
     """So esquenta os caches de ponderacao em frequencia (nho09.weighted_
     blocks), fora da UI thread. Os retornos saem descartados aqui de
     proposito: quando o codigo de renderizacao roda depois, na UI thread,
@@ -32,13 +32,13 @@ def _prime(day, position, hours, cfg, criterion_idx, extra_hours):
     Roda inteiramente com valores simples (nao widgets do Qt), porque tocar
     um QWidget fora da UI thread corrompe a interface.
     """
-    summary.normative_criteria(day, position, hours)
+    summary.normative_criteria(day, position, hours, custom)
     summary.lab_criteria(day, cfg)
     summary.per_file(day, hours)
     if position != 'seat':
-        ps.comfort(day.blocks, day.dt, position)
-        if position == 'backrest':
-            ps.backrest_health_informative(day.blocks, day.dt, hours)
+        ps.comfort(day.blocks, day.dt, position, custom=custom)
+        if position in ('backrest', 'feet'):
+            ps.health_informative(day.blocks, day.dt, hours, position)
     elif criterion_idx > 0:
         mode = 'highest' if criterion_idx == 1 else 'vector'
         directive.assess(day.blocks, day.dt, hours, mode=mode)
@@ -49,6 +49,11 @@ def _prime(day, position, hours, cfg, criterion_idx, extra_hours):
 
 
 class FieldPanel(QWidget):
+    _LAB_APPLY_CLEAN_STYLE = 'padding: 4px 10px;'
+    _LAB_APPLY_DIRTY_STYLE = (
+        f'background: {WARN_COLOR}; color: #1a1d21; padding: 4px 10px; '
+        f'border: 2px solid #9a5a00; border-radius: 4px;')
+
     def __init__(self, plot_factory, status):
         super().__init__()
         self.status = status
@@ -91,6 +96,10 @@ class FieldPanel(QWidget):
         self.load_btn = QPushButton('Load day (.m files)...')
         self.load_btn.clicked.connect(self.load)
         sv.addWidget(self.load_btn)
+        self.clear_btn = QPushButton('Clear')
+        self.clear_btn.setObjectName('secondary')
+        self.clear_btn.clicked.connect(self.clear_day)
+        sv.addWidget(self.clear_btn)
         self.info = QLabel('No data loaded')
         self.info.setObjectName('muted')
         self.info.setWordWrap(True)
@@ -106,48 +115,85 @@ class FieldPanel(QWidget):
             'calibration separates the two.')
         sv.addWidget(self.calibrate)
 
-        lab = QGroupBox('Lab method (MATLAB app) — for comparison only')
-        lg = QGridLayout(lab)
+        self.lab_open_btn = QPushButton('Lab method (MATLAB app)...')
+        self.lab_open_btn.clicked.connect(self._open_lab_dialog)
+        sv.addWidget(self.lab_open_btn)
+        self.lab_summary = QLabel('')
+        self.lab_summary.setObjectName('muted')
+        self.lab_summary.setWordWrap(True)
+        sv.addWidget(self.lab_summary)
+        sv.addStretch()
+        top.addWidget(src, 1)
+
+        self.lab_dialog = QDialog(self)
+        self.lab_dialog.setWindowTitle('Lab method (MATLAB app) — for comparison only')
+        self.lab_dialog.setMinimumWidth(520)
+        dv = QVBoxLayout(self.lab_dialog)
+        lg = QGridLayout()
+        dv.addLayout(lg)
         lg.setContentsMargins(8, 4, 8, 4)
         lg.setVerticalSpacing(3)
+        self.lab_apply = QPushButton('Apply weighting / gain')
+        self.lab_apply.setToolTip(
+            'Weighting and gain changes above are staged, not recomputed on '
+            'every click — refiltering a whole day is slow. Change as many '
+            'axes as needed, then click here (or Apply below) once.')
+        self.lab_apply.setMinimumHeight(34)
+        f = self.lab_apply.font()
+        f.setBold(True)
+        f.setPointSize(f.pointSize() + 1)
+        self.lab_apply.setFont(f)
+        self.lab_apply.setStyleSheet(self._LAB_APPLY_CLEAN_STYLE)
+        self.lab_apply.clicked.connect(self._apply_lab)
+        lg.addWidget(self.lab_apply, 0, 0, 1, 4)
         self.lab_w, self.lab_k = [], []
         for c, ax in enumerate('xyz'):
-            lg.addWidget(QLabel(f'{ax}'), 0, c + 1, alignment=Qt.AlignCenter)
+            lg.addWidget(QLabel(f'{ax}'), 1, c + 1, alignment=Qt.AlignCenter)
             box = QComboBox()
             for w in labmethod.WEIGHTINGS:
                 box.addItem('None' if w is None else w, w)
             box.setCurrentIndex(labmethod.WEIGHTINGS.index(
                 labmethod.LabConfig().weights[c]))
-            box.currentIndexChanged.connect(self._on_lab)
-            lg.addWidget(box, 1, c + 1)
+            box.currentIndexChanged.connect(self._mark_lab_dirty)
+            lg.addWidget(box, 2, c + 1)
             kk = QDoubleSpinBox()
             kk.setRange(0.0, 5.0)
             kk.setSingleStep(0.1)
             kk.setValue(labmethod.LabConfig().k[c])
-            kk.valueChanged.connect(self._on_lab)
-            lg.addWidget(kk, 2, c + 1)
+            kk.valueChanged.connect(self._mark_lab_dirty)
+            lg.addWidget(kk, 3, c + 1)
             self.lab_w.append(box)
             self.lab_k.append(kk)
-        lg.addWidget(QLabel('Weighting'), 1, 0)
-        lg.addWidget(QLabel('Gain k'), 2, 0)
-        self.lab_force_axes = QCheckBox('Force fixed x-z swap (audit mode)')
-        self.lab_force_axes.setChecked(False)
-        self.lab_force_axes.setToolTip(
-            'Off (default): the vertical axis is detected from gravity in '
-            'each file, the same criterion this software\'s own pipeline '
-            'uses. Orientation is not fixed — it changes between campaigns '
-            'and sometimes within the same day (documentation Sec. 10.8, '
-            '10.10). On: forces the original lab app\'s fixed x <-> z '
-            'exchange regardless of gravity, to reproduce one specific '
-            'published result for audit (Sec. 10.9).')
-        self.lab_force_axes.stateChanged.connect(self._on_lab)
-        lg.addWidget(self.lab_force_axes, 3, 0, 1, 2)
+        lg.addWidget(QLabel('Weighting'), 2, 0)
+        lg.addWidget(QLabel('Gain k'), 3, 0)
+        self.lab_axis_mode = QComboBox()
+        self.lab_axis_mode.addItem(
+            'Auto-detect vertical axis from gravity (not what the app does)',
+            'auto')
+        self.lab_axis_mode.addItem(
+            'Raw column order (app: "Exchange x-z axis" OFF, its default)',
+            'raw')
+        self.lab_axis_mode.addItem(
+            'Swap x <-> z (app: "Exchange x-z axis" ON)', 'swap')
+        self.lab_axis_mode.setToolTip(
+            'The app NEVER looks at gravity: it always applies the '
+            'weighting to the file\'s columns in a fixed order (or swaps '
+            'columns 1 and 3 if you tick its checkbox), no matter which one '
+            'is actually vertical. "Auto" is an improvement this software '
+            'adds on top — it only matches the app when the file\'s '
+            'orientation happens to agree with the fixed assumption. If '
+            'this software\'s reproduction of the app diverges from the '
+            'app\'s own screen, try "Raw column order" or "Swap x <-> z" '
+            'here to match whichever checkbox state produced that screen, '
+            'before suspecting the weighting itself.')
+        self.lab_axis_mode.currentIndexChanged.connect(self._mark_lab_dirty)
+        lg.addWidget(self.lab_axis_mode, 4, 0, 1, 4)
         self.lab_rms = QComboBox()
         for t in (0.5, 1.0, 2.0):
             self.lab_rms.addItem(f'RMS time {t:g} s', t)
         self.lab_rms.setCurrentIndex(2)
-        self.lab_rms.currentIndexChanged.connect(self._on_lab)
-        lg.addWidget(self.lab_rms, 3, 2, 1, 2)
+        self.lab_rms.currentIndexChanged.connect(self._mark_lab_dirty)
+        lg.addWidget(self.lab_rms, 5, 0, 1, 2)
         self.lab_bug = QCheckBox('Reproduce the app VDV defects')
         self.lab_bug.setChecked(False)
         self.lab_bug.setToolTip(
@@ -156,11 +202,13 @@ class FieldPanel(QWidget):
             'the recorded time, and combines axes by root-sum-of-squares. Off '
             '(default): corrected VDV, highest axis. On: only to check the '
             'numbers against the app screen.')
-        self.lab_bug.stateChanged.connect(self._on_lab)
-        lg.addWidget(self.lab_bug, 4, 0, 1, 4)
-        sv.addWidget(lab)
-        sv.addStretch()
-        top.addWidget(src, 1)
+        self.lab_bug.stateChanged.connect(self._mark_lab_dirty)
+        lg.addWidget(self.lab_bug, 6, 0, 1, 4)
+        close_btn = QPushButton('Close')
+        close_btn.setObjectName('secondary')
+        close_btn.clicked.connect(self.lab_dialog.hide)
+        dv.addWidget(close_btn)
+        self._refresh_lab_summary()
 
         ext = QGroupBox('Assessment')
         eg = QGridLayout(ext)
@@ -172,9 +220,48 @@ class FieldPanel(QWidget):
             'ISO 2631-1 assesses health only at the seat surface. The '
             'backrest x-axis (Wc, k = 0.8) is measured but excluded from the '
             'health assessment (7.2.3); backrest and feet are assessed for '
-            'comfort.')
+            'comfort. Custom lets you set weighting and gain per axis '
+            'yourself, for a sensor position the norm does not cover.')
         self.position.currentIndexChanged.connect(self._on_position)
         eg.addWidget(self.position, 8, 1)
+        self.custom_open_btn = QPushButton('Custom position weighting...')
+        self.custom_open_btn.setEnabled(False)
+        self.custom_open_btn.clicked.connect(self._open_custom_dialog)
+        eg.addWidget(self.custom_open_btn, 9, 0, 1, 2)
+        self.custom_summary = QLabel('')
+        self.custom_summary.setObjectName('muted')
+        self.custom_summary.setWordWrap(True)
+        eg.addWidget(self.custom_summary, 10, 0, 1, 2)
+
+        self.custom_dialog = QDialog(self)
+        self.custom_dialog.setWindowTitle('Custom position weighting')
+        self.custom_dialog.setMinimumWidth(360)
+        cdv = QVBoxLayout(self.custom_dialog)
+        cg = QGridLayout()
+        cdv.addLayout(cg)
+        cg.setContentsMargins(6, 4, 6, 4)
+        self.custom_w, self.custom_k = [], []
+        for c, ax in enumerate('xyz'):
+            cg.addWidget(QLabel(ax), 0, c, alignment=Qt.AlignCenter)
+            box = QComboBox()
+            box.addItem('None', None)
+            for w in core.WEIGHTINGS:
+                box.addItem(w, w)
+            box.currentIndexChanged.connect(self._on_custom_changed)
+            cg.addWidget(box, 1, c)
+            kk = QDoubleSpinBox()
+            kk.setRange(0.0, 5.0)
+            kk.setSingleStep(0.1)
+            kk.setValue(1.0)
+            kk.valueChanged.connect(self._on_custom_changed)
+            cg.addWidget(kk, 2, c)
+            self.custom_w.append(box)
+            self.custom_k.append(kk)
+        custom_close = QPushButton('Close')
+        custom_close.setObjectName('secondary')
+        custom_close.clicked.connect(self.custom_dialog.hide)
+        cdv.addWidget(custom_close)
+        self._refresh_custom_summary()
         eg.addWidget(QLabel('Criterion'), 4, 0)
         self.criterion = QComboBox()
         self.criterion.addItems([
@@ -332,9 +419,10 @@ class FieldPanel(QWidget):
         self._busy_flag = on
         self.progress.setVisible(on)
         self.busy_label.setText(message if on else '')
-        for w in (self.load_btn, self.position, self.basis, self.extrapolate,
-                 self.calibrate, self.lab_force_axes, self.lab_rms,
-                 self.lab_bug, *self.lab_w, *self.lab_k):
+        for w in (self.load_btn, self.clear_btn, self.lab_open_btn,
+                 self.position, self.basis, self.extrapolate, self.calibrate,
+                 self.lab_axis_mode, self.lab_rms, self.lab_bug, self.lab_apply,
+                 *self.lab_w, *self.lab_k, *self.custom_w, *self.custom_k):
             w.setEnabled(not on)
         # Estes tres tem regra propria de habilitacao (posicao/extrapolacao),
         # nao "sempre habilitado quando ocioso" como os demais controles.
@@ -342,11 +430,13 @@ class FieldPanel(QWidget):
             self.criterion.setEnabled(False)
             self.iso_vdv.setEnabled(False)
             self.hours.setEnabled(False)
+            self.custom_open_btn.setEnabled(False)
         else:
             seat = self.position.currentData() == 'seat'
             self.criterion.setEnabled(seat)
             self.iso_vdv.setEnabled(seat)
             self.hours.setEnabled(self.extrapolate.isChecked())
+            self.custom_open_btn.setEnabled(self.position.currentData() == 'custom')
         if message:
             self.status(message)
 
@@ -387,10 +477,11 @@ class FieldPanel(QWidget):
         cfg = self.lab_config()
         criterion_idx = self.criterion.currentIndex()
         extra_hours = self.hours.value() if self.extrapolate.isChecked() else None
+        custom = self.custom_config() if position == 'custom' else None
 
         def job(report):
             report(None, 'Computing the normative criteria...')
-            _prime(day, position, hours, cfg, criterion_idx, extra_hours)
+            _prime(day, position, hours, cfg, criterion_idx, extra_hours, custom)
             return True
 
         # `then` fica guardado em self, e os sinais sao ligados a metodos
@@ -465,6 +556,33 @@ class FieldPanel(QWidget):
         QMessageBox.critical(self, 'Could not read the files',
                              tb.strip().splitlines()[-1])
 
+    def clear_day(self):
+        if self._busy_flag:
+            return
+        self.day = None
+        self.result = None
+        self.extra = None
+        self._norm_key = None
+        self._lab_key = None
+        self.info.setText('No data loaded')
+        self.info.setStyleSheet(f'color:{TEXT};')
+        self.span_label.setText('Measured period: —')
+        self.verdict.setText('No results yet')
+        self.strip.setText('')
+        self.table.setRowCount(0)
+        for r in (1, 2):
+            for c in range(1, 6):
+                self.a8_cells[(r, c)].setText('—')
+                self.a8_cells[(r, c)].setStyleSheet(
+                    'background:#eef1f4;border-radius:3px;padding:4px;'
+                    'font-weight:700;')
+        self.a8_note.setText('')
+        ax, = self.plot.axes()
+        ax.text(0.5, 0.5, 'Load a day to begin', ha='center', va='center',
+                color='#6c757d', transform=ax.transAxes)
+        self.plot.finish(ax)
+        self.status('Cleared.')
+
     def compute(self):
         self._refresh(self._compute_sync)
 
@@ -480,12 +598,65 @@ class FieldPanel(QWidget):
         return labmethod.LabConfig(
             weights=tuple(b.currentData() for b in self.lab_w),
             k=tuple(k.value() for k in self.lab_k),
-            force_fixed_axes=self.lab_force_axes.isChecked(),
+            axis_mode=self.lab_axis_mode.currentData(),
             rms_time=self.lab_rms.currentData(),
             reproduce_vdv_defects=self.lab_bug.isChecked())
 
+    def custom_config(self):
+        return (tuple(b.currentData() for b in self.custom_w),
+                np.array([k.value() for k in self.custom_k]))
+
+    def _open_custom_dialog(self):
+        self.custom_dialog.show()
+        self.custom_dialog.raise_()
+        self.custom_dialog.activateWindow()
+
+    def _refresh_custom_summary(self):
+        w, k = self.custom_config()
+        wl = ' / '.join('None' if x is None else x for x in w)
+        self.custom_summary.setText(
+            f'{wl}, k {k[0]:g} / {k[1]:g} / {k[2]:g}')
+
+    def _on_custom_changed(self):
+        self._refresh_custom_summary()
+        self._recompute()
+
     def _on_lab(self):
         self._refresh(self._show_and_redraw)
+
+    def _mark_lab_dirty(self):
+        # So muda a aparencia do botao Apply; nenhum recalculo roda aqui.
+        # Refiltrar um dia inteiro para cada eixo/ganho trocado, um por um,
+        # e caro -- o mesmo motivo que fez o app do laboratorio so recalcular
+        # ao clicar "Perform Results", nao a cada dropdown.
+        self.lab_apply.setStyleSheet(self._LAB_APPLY_DIRTY_STYLE)
+        self.lab_apply.setText('▶  Apply weighting / gain  —  changed, click to recompute')
+        self.lab_summary.setText(self._lab_summary_text() + ' — pending, not applied yet')
+        self.lab_summary.setStyleSheet(f'color:{WARN_COLOR}; font-weight:600;')
+
+    def _apply_lab(self):
+        self.lab_apply.setStyleSheet(self._LAB_APPLY_CLEAN_STYLE)
+        self.lab_apply.setText('Apply weighting / gain')
+        self._refresh_lab_summary()
+        self._on_lab()
+
+    def _open_lab_dialog(self):
+        self.lab_dialog.show()
+        self.lab_dialog.raise_()
+        self.lab_dialog.activateWindow()
+
+    def _lab_summary_text(self):
+        cfg = self.lab_config()
+        wl = ' / '.join('None' if w is None else w for w in cfg.weights)
+        return (f'Lab method: {wl}, k {cfg.k[0]:g} / {cfg.k[1]:g} / '
+               f'{cfg.k[2]:g}, {self._axis_mode_text(cfg)}')
+
+    def _refresh_lab_summary(self):
+        self.lab_summary.setText(self._lab_summary_text())
+        self.lab_summary.setStyleSheet('')
+        self.lab_summary.setObjectName('muted')
+        self.lab_summary.style().unpolish(self.lab_summary)
+        self.lab_summary.style().polish(self.lab_summary)
 
     def _show_and_redraw(self):
         self._show()
@@ -493,13 +664,15 @@ class FieldPanel(QWidget):
 
     def _update_summary(self):
         cfg = self.lab_config()
-        nkey = (id(self.day), self.position.currentData(),
-                round(self._exposure_hours(), 4))
+        position = self.position.currentData()
+        custom = self.custom_config() if position == 'custom' else None
+        nkey = (id(self.day), position, round(self._exposure_hours(), 4),
+                repr(custom))
         lkey = (id(self.day), repr(cfg))
         if nkey != getattr(self, '_norm_key', None):
             self.status('Computing the normative criteria...')
             self._norm, self.dres = summary.normative_criteria(
-                self.day, self.position.currentData(), self._exposure_hours())
+                self.day, position, self._exposure_hours(), custom)
             self.hours_rows = summary.per_file(self.day, self._exposure_hours())
             self._norm_key = nkey
         if lkey != getattr(self, '_lab_key', None):
@@ -544,6 +717,7 @@ class FieldPanel(QWidget):
         seat = self.position.currentData() == 'seat'
         for w in (self.criterion, self.iso_vdv):
             w.setEnabled(seat)
+        self.custom_open_btn.setEnabled(self.position.currentData() == 'custom')
         if self.day is None:
             return
         fd.reorient_day(self.day, self.position.currentData())
@@ -684,7 +858,7 @@ class FieldPanel(QWidget):
         x = np.arange(3)
         wd = 0.36
         b1 = ax.bar(x - wd / 2, ours, wd, color=ACCENT,
-                    label='this software (Wd / Wd / Wk, 1.4 / 1.4 / 1.0)')
+                    label=f'this software ({self._display_weighting_text()})')
         cfg = self.lab_config()
         lab_lbl = ' / '.join('None' if w is None else w for w in cfg.weights)
         b2 = ax.bar(x + wd / 2, lab, wd, color='#adb5bd', hatch='//',
@@ -769,19 +943,38 @@ class FieldPanel(QWidget):
         cfg = self.lab_config()
         wl = ' / '.join('None' if w is None else w for w in cfg.weights)
         self.a8_note.setText(
-            f'This software: Wd / Wd / Wk, k 1.4 / 1.4 / 1.0. Lab method: {wl}, '
-            f'k {cfg.k[0]:g} / {cfg.k[1]:g} / {cfg.k[2]:g}'
-            + (', fixed x-z swap forced (audit mode)' if cfg.force_fixed_axes
-               else ', vertical axis auto-detected per file') +
+            f'This software: {self._display_weighting_text()}. Lab method: '
+            f'{wl}, k {cfg.k[0]:g} / {cfg.k[1]:g} / {cfg.k[2]:g}, '
+            f'{self._axis_mode_text(cfg)}'
             '. Coloured against EAV 0.5 / ELV 1.15'
             + ('.' if seat else ' for reference only: at this position the '
                'A(8) is not a health assessment, so every cell is grey.'))
+
+    def _display_weighting_text(self):
+        """Ponderacao/ganho que self.dres de fato usa nesta posicao -- ver
+        summary.display_weights. Wd/Wd/Wk 1,4/1,4/1,0 so no assento."""
+        pos = self.position.currentData()
+        custom = self.custom_config() if pos == 'custom' else None
+        dw, dk = summary.display_weights(pos, custom)
+        if dw is None:
+            return 'Wd / Wd / Wk, k 1.4 / 1.4 / 1.0'
+        wl = ' / '.join('None' if w is None else w for w in dw)
+        return f'{wl}, k {dk[0]:g} / {dk[1]:g} / {dk[2]:g}'
+
+    def _axis_mode_text(self, cfg):
+        return {'raw': 'raw column order (app default)',
+                'swap': 'x <-> z swap forced (app checkbox on)',
+                'auto': 'vertical axis auto-detected per file (not the app)',
+                }[cfg.axis_mode]
 
     def _a8_rows(self):
         """A(8) por eixo e diario, sempre visivel, em qualquer posicao.
 
         Duas reguas: a deste software, com a ponderacao de saude do assento
-        (a unica definicao de A(8) que a diretiva tem), e a do metodo do
+        (Wd/Wd/Wk, a definicao da propria diretiva) quando a posicao e o
+        assento, ou a ponderacao de positions.HEALTH quando nao e -- ver
+        _display_weighting_text/summary.display_weights, para nao mostrar
+        Wd/Wd/Wk aplicado a um sensor de encosto ou pe. E o metodo do
         laboratorio com a configuracao escolhida, que reproduz o painel
         'Total A(8) Exposure' do aplicativo. Fora do assento os dois valem
         como informacao, nao como avaliacao de saude.
@@ -792,7 +985,7 @@ class FieldPanel(QWidget):
         cfg = self.lab_config()
         wl = ' / '.join('None' if w is None else w for w in cfg.weights)
         return [
-            ('— A(8) per axis —', '', 'Wd / Wd / Wk, k 1.4 / 1.4 / 1.0' + tag),
+            ('— A(8) per axis —', '', self._display_weighting_text() + tag),
             ('A(8) x, y, z', ',  '.join(f'{v:.3f}' for v in d.a8_axis),
              'this software'),
             ('A(8) daily, highest axis', f'{d.a8_axis.max():.3f}',
@@ -800,9 +993,8 @@ class FieldPanel(QWidget):
             ('A(8) daily, vector sum', f'{np.sqrt((d.a8_axis ** 2).sum()):.3f}',
              'lab convention'),
             ('— lab method (app panel) —', '',
-             f'{wl}, k {cfg.k[0]:g} / {cfg.k[1]:g} / {cfg.k[2]:g}'
-             + (', fixed x-z swap forced' if cfg.force_fixed_axes
-                else ', axis auto-detected')),
+             f'{wl}, k {cfg.k[0]:g} / {cfg.k[1]:g} / {cfg.k[2]:g}, '
+             f'{self._axis_mode_text(cfg)}'),
             ('A(8) x, y, z (app axes)', ',  '.join(f'{v:.3f}' for v in lab.a8_axis),
              'as shown by the app'),
             ('A(8) daily (app)', f'{lab.a8_daily:.3f}',
@@ -825,42 +1017,56 @@ class FieldPanel(QWidget):
     def _show_comfort(self):
         d = self.day
         pos = self.position.currentData()
-        c = ps.comfort(d.blocks, d.dt, pos)
+        custom = self.custom_config() if pos == 'custom' else None
+        c = ps.comfort(d.blocks, d.dt, pos, custom=custom)
         hours = self._exposure_hours()
         rows = [
             ('a_w x, y, z [m/s2]', ',  '.join(f'{v:.4f}' for v in c['aw']),
-             ' / '.join(c['weights'])),
+             ' / '.join('None' if w is None else w for w in c['weights'])),
             ('k x, y, z', ' / '.join(f'{v:g}' for v in c['k']),
-             'ISO 2631-1, 8.2'),
-            ('a_v, vibration total value', f"{c['av']:.3f}", c['label']),
+             'ISO 2631-1, 8.2' if pos != 'custom' else 'user-defined'),
+            ('a_v, vibration total value', f"{c['av']:.3f}",
+             c['label'] if pos != 'custom' else 'no ISO indication applies'),
         ]
-        extra = ''
-        if pos == 'backrest':
-            h = ps.backrest_health_informative(d.blocks, d.dt, hours)
+        if pos in ('backrest', 'feet'):
+            h = ps.health_informative(d.blocks, d.dt, hours, pos)
+            wl = ' / '.join('None' if w is None else w for w in h['weights'])
+            kl = ' / '.join(f'{v:g}' for v in h['k'])
+            note = ('ISO 2631-1, 7.2.3' if pos == 'backrest'
+                    else 'not defined by ISO 2631-1')
             rows += [
-                ('— health, informative only —', '', 'ISO 2631-1, 7.2.3'),
-                ('x-axis, Wc, k = 0.8: A(8)', f"{h['a8']:.3f}",
-                 'not compared with any action level'),
-                ('x-axis, Wc, k = 0.8: VDV', f"{h['vdv']:.2f}",
+                ('— health, informative only —', '', note),
+                ('x, y, z: A(8)', ',  '.join(f'{v:.3f}' for v in h['a8']),
+                 f'{wl}, k {kl} — not compared with any action level'),
+                ('x, y, z: VDV', ',  '.join(f'{v:.2f}' for v in h['vdv']),
                  'not compared with any action level'),
             ]
-            extra = (' The backrest x-axis is shown for information: ISO 2631-1 '
-                     'recommends measuring it but excludes it from the health '
-                     'assessment.')
+        if pos == 'backrest':
+            extra = (' The backrest x-axis is shown for information: ISO '
+                     '2631-1 recommends measuring it but excludes it from '
+                     'the health assessment.')
+        elif pos == 'feet':
+            extra = (' ISO 2631-1 defines no health criterion for the feet; '
+                     'the unweighted values above are shown for information '
+                     'only.')
+        else:
+            extra = (' Custom position: weighting and gain per axis are '
+                     'user-defined, above. Neither the comfort scale nor '
+                     'any action/limit level applies to this combination.')
         rows += self._a8_rows()
         colour = (OK_COLOR if c['av'] < 0.315 else
                   WARN_COLOR if c['av'] < 1.0 else BAD_COLOR)
+        health_line = ('health: not assessed at this position' if pos != 'custom'
+                       else 'health: not assessed — custom weighting')
+        comfort_label_shown = c['label'] if pos != 'custom' else 'not an ISO scale'
         self.verdict.setText(
             f'<div style="font-size:24px;font-weight:700;color:{colour}">'
             f'a<sub>v</sub> = {c["av"]:.3f} m/s&sup2;</div>'
             f'<div style="color:{TEXT};font-size:14px">comfort: '
-            f'<b>{c["label"]}</b> &nbsp;|&nbsp; health: not assessed at this '
-            f'position</div>'
+            f'<b>{comfort_label_shown}</b> &nbsp;|&nbsp; {health_line}</div>'
             f'<div style="color:#4a5157;font-size:12px">ISO 2631-1 comfort, '
             f'{self.position.currentText().split(" —")[0].lower()}. Annex C '
             f'values are approximate indications, not limits.{extra}</div>')
-        if pos == 'feet':
-            rows += self._a8_rows()
         self._fill_table(rows)
 
     def _show_directive(self):
@@ -916,8 +1122,20 @@ class FieldPanel(QWidget):
             ax, = self.plot.axes()
             t = (d.seconds - d.seconds[0]) / 3600.0
             rms = np.sqrt((d.blocks ** 2).mean(axis=1))
+            # Varios arquivos concatenados podem ter um salto de horario entre
+            # o ultimo bloco de um e o primeiro do proximo (ex.: uma sessao de
+            # manha e outra de tarde escolhidas juntas para o mesmo dia). Sem
+            # quebrar a linha ali, o matplotlib liga os dois pontos direto,
+            # como se o tempo entre eles tivesse sido medido -- daí a diagonal
+            # atravessando o grafico. Insere-se NaN nos saltos maiores que o
+            # esperado entre blocos consecutivos para cortar a linha.
+            gap = np.diff(d.seconds) > fd.BLOCK_PERIOD * 1.5
+            breaks = np.flatnonzero(gap) + 1
+            t_plot = np.insert(t, breaks, np.nan)
+            rms_plot = np.insert(rms, breaks, np.nan, axis=0)
             for c, name in enumerate(core.AXIS_NAMES):
-                ax.plot(t, rms[:, c], lw=0.6, color=AXIS_COLORS[c], label=name)
+                ax.plot(t_plot, rms_plot[:, c], lw=0.6, color=AXIS_COLORS[c],
+                       label=name)
             top = rms.max() * 1.05
             empty = ~d.occupied
             edges = np.flatnonzero(np.diff(np.r_[0, empty.astype(int), 0]))

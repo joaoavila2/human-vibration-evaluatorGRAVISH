@@ -90,6 +90,10 @@ class FieldSignalExplorer(QWidget):
         b2.setObjectName('secondary')
         b2.clicked.connect(self.remove_current)
         fl.addWidget(b2)
+        b3 = QPushButton('Clear all')
+        b3.setObjectName('secondary')
+        b3.clicked.connect(self.clear_all)
+        fl.addWidget(b3)
         row.addWidget(files)
 
         ctrl = QGroupBox('View')
@@ -194,6 +198,13 @@ class FieldSignalExplorer(QWidget):
         self.list.takeItem(r)
         self.records.pop(name, None)
         self.stats.pop(name, None)
+        self.refresh()
+        self._on_current_changed()
+
+    def clear_all(self):
+        self.list.clear()
+        self.records.clear()
+        self.stats.clear()
         self.refresh()
         self._on_current_changed()
 

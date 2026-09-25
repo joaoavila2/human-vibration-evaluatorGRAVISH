@@ -244,7 +244,7 @@ class MainWindow(QMainWindow):
         explorer_tabs = QTabWidget()
         explorer_tabs.addTab(self.explorer, 'ASCII records')
         explorer_tabs.addTab(self.field_explorer, 'Field logger records (.m)')
-        explorer_tabs.addTab(self.field, 'Field logger — NHO-09 / Directive')
+        explorer_tabs.addTab(self.field, 'Directive')
         self.explorer_tabs = explorer_tabs
         tabs.addTab(explorer_tabs, 'Signal explorer')
         self.tabs = tabs

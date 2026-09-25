@@ -21,13 +21,31 @@ class Criterion:
     note: str = ''
 
 
-def all_criteria(day, position, hours, lab_cfg):
-    norm, d = normative_criteria(day, position, hours)
+def all_criteria(day, position, hours, lab_cfg, custom=None):
+    norm, d = normative_criteria(day, position, hours, custom)
     lab_c, lab = lab_criteria(day, lab_cfg)
     return norm + lab_c, lab, d
 
 
-def normative_criteria(day, position, hours):
+def display_weights(position, custom):
+    """Ponderacao e ganho a mostrar como "this software" fora do assento.
+
+    None/None (o padrao de directive.assess, Wd/Wd/Wk 1,4/1,4/1,0) so faz
+    sentido no assento -- e a definicao da propria diretiva. Fora dele, a
+    grade "A(8) per axis" e as linhas de comparacao devem usar a mesma
+    ponderacao que positions.HEALTH ja usa em health_informative, senao a
+    coluna "this software" mostra Wd/Wd/Wk aplicado a um sensor de encosto
+    ou pe, o que nao e nem a definicao da diretiva nem nada normativo --
+    so ponderacao errada disfarcada de comparacao.
+    """
+    if position in ps.HEALTH:
+        return ps.HEALTH[position]
+    if position == 'custom' and custom is not None:
+        return custom
+    return None, None
+
+
+def normative_criteria(day, position, hours, custom=None):
     blocks, dt = day.blocks, day.dt
     seat = position == 'seat'
     out = []
@@ -36,6 +54,9 @@ def normative_criteria(day, position, hours):
     out += [Criterion('NHO-09', 'aren', r.aren, 0.5, 1.1, seat),
             Criterion('NHO-09', 'VDVR', r.vdvr, 9.1, 21.0, seat)]
 
+    # d segue sempre Wd/Wd/Wk: e a definicao literal da diretiva, e as duas
+    # linhas de criterio abaixo (highest axis / vector sum) representam essa
+    # definicao mesmo quando marcadas nao-normativas fora do assento.
     d = directive.assess(blocks, dt, hours, 'highest')
     out += [Criterion('Directive, highest axis', 'A(8)', d.a8, 0.5, 1.15, seat),
             Criterion('Directive, highest axis', 'VDV', d.vdv, 9.1, 21.0, seat)]
@@ -44,16 +65,31 @@ def normative_criteria(day, position, hours):
     out += [Criterion('Directive, vector sum', 'A(8)', v.a8, 0.5, 1.15, seat,
                       'diverges from the Directive text')]
 
-    c = ps.comfort(blocks, dt, position)
-    out.append(Criterion('ISO 2631-1 comfort', 'a_v', c['av'], 0.315, 1.0, True,
-                         c['label']))
+    c = ps.comfort(blocks, dt, position, custom=custom)
+    out.append(Criterion('ISO 2631-1 comfort', 'a_v', c['av'], 0.315, 1.0,
+                         position != 'custom',
+                         c['label'] if position != 'custom'
+                         else 'user-defined weighting, not an ISO indication'))
 
-    if position == 'backrest':
-        h = ps.backrest_health_informative(blocks, dt, hours)
-        out.append(Criterion('Backrest x, Wc k=0.8', 'A(8)', h['a8'],
-                             np.nan, np.nan, False, 'informative, 7.2.3'))
+    if position in ('backrest', 'feet'):
+        h = ps.health_informative(blocks, dt, hours, position)
+        if position == 'backrest':
+            name, value = 'Backrest x, Wc k=0.8', float(h['a8'][0])
+            note = 'informative, 7.2.3'
+        else:
+            name = 'Feet, unweighted'
+            value = float(np.sqrt((h['a8'] ** 2).sum()))
+            note = 'informative, not defined by the norm'
+        out.append(Criterion(name, 'A(8)', value, np.nan, np.nan, False, note))
 
-    return out, d
+    # d_display: o mesmo formato de resultado que d, mas com a ponderacao
+    # certa para a posicao -- usado pela grade "A(8) per axis" e pelas linhas
+    # de comparacao "this software", NUNCA pelos dois criterios acima.
+    dw, dk = display_weights(position, custom)
+    d_display = d if dw is None else directive.assess(
+        blocks, dt, hours, 'highest', weights=dw, k=dk)
+
+    return out, d_display
 
 
 def lab_criteria(day, lab_cfg):
