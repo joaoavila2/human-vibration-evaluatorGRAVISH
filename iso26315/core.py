@@ -663,6 +663,72 @@ def band_rms(f, psd, edges):
     return out
 
 
+def spectrogram(x, dt, window='Hann', nperseg=1024, overlap=0.5, quantity='accel'):
+    """Espectrograma (STFT): espectro de amplitude por segmento sobreposto,
+    ao longo do tempo -- cada coluna e' o mesmo espectro de amplitude que
+    o welch_spectrum ja calcula, so que em janelas curtas deslizantes em
+    vez de uma unica media do registro inteiro. Revela COMO o conteudo em
+    frequencia muda com o tempo (ex.: a assinatura de banda larga e breve
+    de um choque de guia, contra vibracao continua de rolamento).
+    """
+    n = len(x)
+    nperseg = int(min(nperseg, n - (n % 2)))
+    if nperseg % 2:
+        nperseg -= 1
+    w = _window(window, nperseg)
+    step = max(1, int(round(nperseg * (1.0 - overlap))))
+    starts = list(range(0, n - nperseg + 1, step)) or [0]
+    f = np.arange(nperseg // 2 + 1) / (nperseg * dt)
+    x = np.asarray(x, dtype=float)
+    S = np.empty((len(f), len(starts)))
+    for j, s in enumerate(starts):
+        seg = x[s:s + nperseg]
+        X = np.fft.rfft((seg - seg.mean()) * w)
+        amp = np.abs(X) * 2.0 / np.sum(w)
+        amp[0] /= 2.0
+        amp[-1] /= 2.0
+        S[:, j] = amp
+    t = (np.array(starts, dtype=float) + nperseg / 2.0) * dt
+    if quantity != 'accel':
+        wr = 2 * np.pi * f
+        n_exp = 1 if quantity == 'velocity' else 2
+        with np.errstate(divide='ignore', invalid='ignore'):
+            S = S / wr[:, None] ** n_exp
+        S[0, :] = 0.0
+    return t, f, S
+
+
+def shock_response_spectrum(x, dt, freqs=None, q=10.0):
+    """SRS maximax de aceleracao absoluta: resposta de um sistema massa-
+    mola-amortecedor de 1 grau de liberdade excitado pela base, simulada
+    por frequencia natural via filtro digital (bilinear), tomando o pico
+    absoluto da resposta.
+
+    Padrao em teste de choque/transporte (MIL-STD-810): caracteriza
+    severidade em funcao da frequencia de resposta, em vez de resumir um
+    choque num RMS ou pico unico que nao diz nada sobre que estrutura
+    ressoante ele mais excitaria.
+
+    q = fator de qualidade (Q = 1/(2*zeta)); Q=10 (zeta=0,05) e' a
+    convencao mais comum.
+    """
+    from scipy.signal import cont2discrete, lfilter
+    if freqs is None:
+        f_max = min(500.0, 0.4 / dt)
+        freqs = np.geomspace(2.0, f_max, 80)
+    zeta = 1.0 / (2 * q)
+    x = np.asarray(x, dtype=float)
+    srs = np.empty(len(freqs))
+    for i, fn in enumerate(freqs):
+        wn = 2 * np.pi * fn
+        num = [2 * zeta * wn, wn ** 2]
+        den = [1.0, 2 * zeta * wn, wn ** 2]
+        bd, ad, _ = cont2discrete((num, den), dt, method='bilinear')
+        resp = lfilter(bd[0], ad, x)
+        srs[i] = np.abs(resp).max()
+    return freqs, srs
+
+
 def third_octave_rms(x, dt, window='Hann', nperseg=8192, overlap=0.5):
     f, psd, navg = welch_spectrum(x, dt, window, nperseg, overlap, kind='psd')
     centers = THIRD_OCTAVE_CENTERS[THIRD_OCTAVE_CENTERS <= min(LOWPASS_HZ,
@@ -671,12 +737,45 @@ def third_octave_rms(x, dt, window='Hann', nperseg=8192, overlap=0.5):
     return centers, band_rms(f, psd, edges), navg
 
 
+QUANTITY_LABELS = {'accel': 'Acceleration', 'velocity': 'Velocity',
+                   'displacement': 'Displacement'}
+QUANTITY_UNITS = {'accel': 'm/s$^2$', 'velocity': 'm/s', 'displacement': 'm'}
+
+
+def _convert_quantity(f, y, label_template, quantity, power):
+    """Converte um espectro de aceleracao pra velocidade/deslocamento por
+    integracao no dominio da frequencia (V(f) = A(f)/jw, U(f) = A(f)/-w^2).
+    So a MAGNITUDE importa aqui (visualizacao) -- por isso e' so 1/w^n, sem
+    preservar fase, ao contrario do exc.spectrum usado na cadeia de forca.
+
+    power=True quando y e' densidade espectral (unidade ao quadrado por Hz,
+    ex. PSD) -- nesse caso a integracao escala com w^(2n), nao w^n.
+
+    label_template usa {q} (nome da grandeza) e {u} (unidade, ja ao quadrado
+    se power=True) -- ex. '{q} amplitude [{u}]', 'PSD [({u})$^2$/Hz]'.
+    """
+    unit = QUANTITY_UNITS[quantity]
+    label = label_template.format(q=QUANTITY_LABELS[quantity], u=unit)
+    if quantity == 'accel':
+        return y, label
+    n = 1 if quantity == 'velocity' else 2
+    exponent = 2 * n if power else n
+    w = 2 * np.pi * f
+    with np.errstate(divide='ignore', invalid='ignore'):
+        y2 = y / w ** exponent
+    y2 = np.where(w > 0, y2, 0.0)
+    return y2, label
+
+
 def analysis_spectrum(exc, method, axis=None, window='Hann', nperseg=8192,
-                      overlap=0.5, band_width=1.0, weighting=None):
+                      overlap=0.5, band_width=1.0, weighting=None,
+                      quantity='accel'):
     """Espectro para visualizacao. Devolve (f, y, rotulo do eixo y, nota).
 
     weighting aplica uma ponderacao da ISO 2631-1 ao espectro exibido. Nao
-    altera nada do calculo de dose ou de fator de risco.
+    altera nada do calculo de dose ou de fator de risco. quantity troca
+    aceleracao por velocidade/deslocamento (so na visualizacao, mesmo
+    espirito do weighting).
     """
     sig = exc.accel if axis is None else exc.accel[:, [axis]]
     cols = list(range(3)) if axis is None else [axis]
@@ -694,7 +793,9 @@ def analysis_spectrum(exc, method, axis=None, window='Hann', nperseg=8192,
                             for c in range(3)))
         else:
             y = np.abs(exc.accel_spectrum[:, axis]) * _axis_gain(cfg, axis, exc.freq)
-        return (exc.freq, y, 'Acceleration amplitude [m/s$^2$]',
+        y, ylabel = _convert_quantity(
+            exc.freq, y, '{q} amplitude [{u}]', quantity, power=False)
+        return (exc.freq, y, ylabel,
                 'Single complex FFT of the whole record, rectangular window. '
                 'This is what feeds the force computation.' + tag)
 
@@ -719,13 +820,22 @@ def analysis_spectrum(exc, method, axis=None, window='Hann', nperseg=8192,
             f'{overlap * 100:.0f}% overlap, resolution {res:.4g} Hz.' + tag)
 
     if method == SPECTRUM_METHODS[1]:
-        return f, acc, 'Acceleration amplitude [m/s$^2$]', tail
+        y, ylabel = _convert_quantity(f, acc, '{q} amplitude [{u}]',
+                                      quantity, power=False)
+        return f, y, ylabel, tail
     if method == SPECTRUM_METHODS[2]:
-        return f, acc, 'PSD [(m/s$^2$)$^2$/Hz]', tail
+        y, ylabel = _convert_quantity(f, acc, 'PSD [({u})$^2$/Hz]',
+                                      quantity, power=True)
+        return f, y, ylabel, tail
     if method == SPECTRUM_METHODS[3]:
+        # Converte a PSD (ainda em aceleracao) ANTES de integrar em bandas --
+        # mais correto que converter o RMS por banda depois, porque evita
+        # aproximar 1/w pela frequencia central da banda.
+        acc_q, _ = _convert_quantity(f, acc, '', quantity, power=True)
         edges = np.arange(0, min(LOWPASS_HZ, f[-1]) + band_width, band_width)
         centers = 0.5 * (edges[:-1] + edges[1:])
-        return (centers, band_rms(f, acc, edges), 'Band RMS [m/s$^2$]',
+        return (centers, band_rms(f, acc_q, edges), 'Band RMS [{u}]'.format(
+                    u=QUANTITY_UNITS[quantity]),
                 tail + f' Integrated into {band_width:g} Hz bands.')
 
     # Um terco de oitava: soma as potencias de banda dos eixos escolhidos, nunca
@@ -738,7 +848,13 @@ def analysis_spectrum(exc, method, axis=None, window='Hann', nperseg=8192,
         rms = rms * _axis_gain(cfg, c, centers)
         total = rms ** 2 if total is None else total + rms ** 2
     total = np.sqrt(total)
-    return (centers, total, 'Band RMS [m/s$^2$]',
+    # Aproximacao: converte pela frequencia CENTRAL de cada banda (nao ha
+    # PSD continua disponivel aqui pra converter antes de integrar, como no
+    # metodo de banda linear acima) -- razoavel pra bandas de terco de
+    # oitava, estreitas o suficiente relativo ao centro.
+    total_q, ylabel = _convert_quantity(centers, total, 'Band RMS [{u}]',
+                                        quantity, power=False)
+    return (centers, total_q, ylabel,
             f'{navg} averaged segments, {window} window. '
             f'One-third octave bands, ISO 266 nominal centres.' + tag)
 

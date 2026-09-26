@@ -152,3 +152,50 @@ def assess(blocks, dt, exposure_hours, moving_mask=None):
 def arithmetic_bias(result):
     """Quanto a media aritmetica prescrita subestima a media pela energia."""
     return result.amr_arithmetic / result.amr - 1.0
+
+
+def running_rms_trace(blocks, dt, tau=1.0):
+    """Mesma janela deslizante do mtvv(), mas devolve o traco inteiro (nao
+    so o maximo) -- para plotar RMS corrente x tempo. Formato (n_blk,
+    n_pontos), soma vetorial ja aplicada (mesmos fatores de amr)."""
+    w = weighted_blocks(blocks, dt)
+    n_blk, n, _ = w.shape
+    win = max(1, min(n, int(round(tau / dt))))
+
+    csum = np.cumsum(w ** 2, axis=1)
+    csum = np.concatenate([np.zeros((n_blk, 1, 3)), csum], axis=1)
+    running_ms = (csum[:, win:, :] - csum[:, :-win, :]) / win
+    running_rms = np.sqrt(running_ms)
+    return np.sqrt(np.sum((FACTORS * running_rms) ** 2, axis=2))
+
+
+def mtvv(blocks, dt, tau=1.0):
+    """Maximum Transient Vibration Value (ISO 2631-1 6.4.2): RMS corrente
+    numa janela de tau segundos do sinal ponderado, combinado por soma
+    vetorial com os mesmos fatores de amr, tomando o maximo entre todos os
+    pontos de todos os blocos.
+
+    Cada bloco e' tratado como um segmento continuo isolado -- a janela
+    deslizante nunca atravessa a lacuna entre blocos, mesma logica do resto
+    do modulo (nao cola blocos discontinuos).
+    """
+    running_vec = running_rms_trace(blocks, dt, tau)
+    return float(running_vec.max()) if running_vec.size else float('nan')
+
+
+def msdv(blocks, dt, exposure_hours):
+    """Motion Sickness Dose Value (ISO 2631-1 Secao 7): ponderacao Wf no
+    eixo vertical (0,1-0,5 Hz, enjoo por movimento de baixa frequencia),
+    energia agregada e extrapolada para o periodo de exposicao total --
+    mesmo estilo de extrapolacao que aren/vdvr usam pra ir da amostra
+    medida ate a exposicao completa.
+
+    A norma nao define um par acao/limite fixo pra MSDV (so orientacoes
+    qualitativas de percentual de pessoas com enjoo, que variam muito por
+    populacao) -- por isso este valor entra como informativo, nao normativo.
+    """
+    w = weighted_blocks(blocks, dt, weights=(None, None, 'Wf'))
+    z = w[:, :, 2]
+    ms = float((z ** 2).mean())
+    t_exp = exposure_hours * 3600.0
+    return float(np.sqrt(ms * t_exp))

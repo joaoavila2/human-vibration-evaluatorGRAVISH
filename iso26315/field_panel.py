@@ -388,6 +388,7 @@ class FieldPanel(QWidget):
             'Side by side: this software vs lab method, per axis',
             'Contribution of each hour to the daily A(8)',
             'Waveform: raw amplitude vs time',
+            'Running RMS (1 s) vs time — MTVV trace',
         ])
         self.kind.currentIndexChanged.connect(self.redraw)
         ctl.addWidget(self.kind, 1)
@@ -934,6 +935,50 @@ class FieldPanel(QWidget):
         ax.legend(fontsize=8, ncol=3)
         self.plot.finish(ax)
 
+    def _draw_running_rms(self):
+        """RMS corrente (janela de 1s, ISO 2631-1 6.4.2) x tempo -- em
+        resolucao bem mais fina que o Timeline (RMS por bloco de 2s).
+        Mostra exatamente onde um transiente empurrou o MTVV pra cima,
+        com as faixas de acao/limite da NHO-09 desenhadas como referencia."""
+        d = self.day
+        ax, = self.plot.axes()
+        tau = 1.0
+        trace = nho09.running_rms_trace(d.blocks, d.dt, tau)
+        n_blk, n_pts = trace.shape
+        n_samples = d.blocks.shape[1]
+        win = max(1, min(n_samples, int(round(tau / d.dt))))
+
+        within = (np.arange(n_pts) + win) * d.dt
+        t = (d.seconds[:, None] - d.seconds[0]) + within[None, :]
+        t_flat = t.reshape(-1)
+        trace_flat = trace.reshape(-1)
+
+        if n_blk > 1:
+            gap = np.diff(d.seconds) > fd.BLOCK_PERIOD * 1.5
+            if gap.any():
+                breaks = (np.flatnonzero(gap) + 1) * n_pts
+                t_flat = np.insert(t_flat, breaks, np.nan)
+                trace_flat = np.insert(trace_flat, breaks, np.nan)
+
+        total = n_blk * n_pts
+        MAX_POINTS = 400_000
+        stride = max(1, total // MAX_POINTS)
+        if stride > 1:
+            t_flat = t_flat[::stride]
+            trace_flat = trace_flat[::stride]
+
+        ax.plot(t_flat, trace_flat, lw=0.7, color=AXIS_COLORS[2])
+        ax.axhline(nho09.ACTION_AREN, color=WARN_COLOR, ls='--', lw=1,
+                  label=f'NHO-09 action ({nho09.ACTION_AREN:g})')
+        ax.axhline(nho09.LIMIT_AREN, color=BAD_COLOR, ls='--', lw=1,
+                  label=f'NHO-09 limit ({nho09.LIMIT_AREN:g})')
+        peak = float(np.nanmax(trace_flat)) if trace_flat.size else 0.0
+        ax.set_xlabel('Time since first block [s]')
+        ax.set_ylabel(f'Running RMS ({tau:g} s) [m/s$^2$]')
+        ax.set_title(f'MTVV = {peak:.3f} m/s$^2$ (running RMS peak)')
+        ax.legend(fontsize=8)
+        self.plot.finish(ax)
+
     def _draw_hours(self):
         rows = self.hours_rows
         ax, = self.plot.axes()
@@ -1205,6 +1250,9 @@ class FieldPanel(QWidget):
             return
         if k == 6:
             self._draw_waveform()
+            return
+        if k == 7:
+            self._draw_running_rms()
             return
 
         ax, = self.plot.axes()

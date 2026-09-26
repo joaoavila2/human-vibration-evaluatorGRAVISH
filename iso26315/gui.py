@@ -429,6 +429,8 @@ class MainWindow(QMainWindow):
             'Compressive force spectrum',
             'Transfer functions in use',
             'Compression dose vs static stress',
+            'Spectrogram (time-frequency)',
+            'Shock Response Spectrum (SRS)',
         ])
         g.addWidget(self.spec_kind, 0, 3)
 
@@ -498,6 +500,20 @@ class MainWindow(QMainWindow):
         self.spec_band.setValue(1.0)
         self.spec_band.setSuffix(' Hz')
         sg.addWidget(self.spec_band, 2, 1)
+
+        sg.addWidget(QLabel('Quantity'), 2, 2)
+        self.spec_quantity = QComboBox()
+        self.spec_quantity.addItem('Acceleration', 'accel')
+        self.spec_quantity.addItem('Velocity (1x integration)', 'velocity')
+        self.spec_quantity.addItem('Displacement (2x integration)', 'displacement')
+        self.spec_quantity.setToolTip(
+            'Converts the displayed spectrum by frequency-domain '
+            'integration (V(f)=A(f)/jw, U(f)=A(f)/-w^2). Visualization '
+            'only -- does not change the dose/risk computation, which '
+            'always uses acceleration/displacement internally as the norm '
+            'defines.')
+        sg.addWidget(self.spec_quantity, 2, 3)
+
         self.spec_note = QLabel('')
         self.spec_note.setObjectName('muted')
         self.spec_note.setWordWrap(True)
@@ -507,7 +523,7 @@ class MainWindow(QMainWindow):
         lay.addWidget(spec)
 
         for w in (self.spec_method, self.spec_window, self.spec_nperseg,
-                  self.spec_overlap):
+                  self.spec_overlap, self.spec_quantity):
             w.currentIndexChanged.connect(self.update_spectra)
         self.spec_band.valueChanged.connect(self.update_spectra)
 
@@ -918,21 +934,23 @@ class MainWindow(QMainWindow):
             return
         kind = self.spec_kind.currentIndex()
         # 0 accel spectrum, 1 phase, 2 coherence, 3 force spectrum,
-        # 4 transfer functions, 5 dose vs static stress.
-        self.spec_loc.setEnabled(kind in (0, 1, 2))
+        # 4 transfer functions, 5 dose vs static stress, 6 spectrogram,
+        # 7 shock response spectrum.
+        self.spec_loc.setEnabled(kind in (0, 1, 2, 6, 7))
         self.spec_loc_label.setText(
             'Reference point' if kind == 2 else 'Contact point')
-        self.spec_axis.setEnabled(kind in (0, 1, 2))
+        self.spec_axis.setEnabled(kind in (0, 1, 2, 6, 7))
         self.spec_raw.setEnabled(kind == 0)
         self.spec_full.setEnabled(kind == 0)
         self.spec_disc.setEnabled(kind in (3, 4))
         method = self.spec_method.currentText()
         block = method == core.SPECTRUM_METHODS[0]
         for w in (self.spec_window, self.spec_nperseg, self.spec_overlap):
-            w.setEnabled(kind in (0, 2))
+            w.setEnabled(kind in (0, 2, 6))
         self.spec_method.setEnabled(kind == 0)
         self.spec_band.setEnabled(kind == 0)
         self.spec_weight.setEnabled(kind == 0)
+        self.spec_quantity.setEnabled(kind in (0, 6))
         if kind == 0:
             self.spec_window.setEnabled(not block)
             self.spec_nperseg.setEnabled(not block)
@@ -956,8 +974,12 @@ class MainWindow(QMainWindow):
             self._plot_force_spectrum(res, logy)
         elif kind == 4:
             self._plot_transfer(res, logy)
-        else:
+        elif kind == 5:
             self._plot_dose(res)
+        elif kind == 6:
+            self._plot_spectrogram(res, logy)
+        else:
+            self._plot_srs(res, logy)
 
     def _plot_excitation(self, res, logy):
         ax, = self.spec_plot.axes()
@@ -992,7 +1014,8 @@ class MainWindow(QMainWindow):
                     nperseg=self.spec_nperseg.currentData(),
                     overlap=self.spec_overlap.currentData(),
                     band_width=self.spec_band.value(),
-                    weighting=self.spec_weight.config())
+                    weighting=self.spec_weight.config(),
+                    quantity=self.spec_quantity.currentData())
                 if bands:
                     ax.step(f, y, where='mid', lw=1.2, ls=style, color=colour,
                             label=lbl)
@@ -1165,6 +1188,92 @@ class MainWindow(QMainWindow):
         ax.set_ylabel('MPa')
         ax.set_title('Compression dose and static stress per level')
         ax.legend(fontsize=9)
+        self.spec_plot.finish(ax)
+
+    def _spec_single_signal(self, res, ax, need_msg):
+        """Resolve ponto de contato + eixo unicos para um plot que so faz
+        sentido de um sinal por vez (espectrograma, SRS). Devolve exc/axis
+        ou None (ja tendo desenhado a mensagem de aviso, se for o caso)."""
+        names = list(res.excitations)
+        axis = self.spec_axis.currentData()
+        loc_i = self.spec_loc.currentData()
+        if axis is None or loc_i is None:
+            ax.text(0.5, 0.5, need_msg, ha='center', va='center',
+                    color='#6c757d', wrap=True, transform=ax.transAxes)
+            self.spec_note.setText('')
+            self.spec_plot.finish(ax)
+            return None
+        exc = res.excitations[names[loc_i]]
+        if exc.accel.shape[0] == 0:
+            ax.text(0.5, 0.5, f'"{core.LOCATION_NAMES[loc_i]}" has no '
+                    'measurement (Zero) in this exposure.', ha='center',
+                    va='center', color='#6c757d', transform=ax.transAxes)
+            self.spec_note.setText('')
+            self.spec_plot.finish(ax)
+            return None
+        return exc, axis, loc_i
+
+    def _plot_spectrogram(self, res, logy):
+        ax, = self.spec_plot.axes()
+        picked = self._spec_single_signal(
+            res, ax, 'Pick a single contact point and a single axis (x, y '
+            'or z): a spectrogram is one signal at a time.')
+        if picked is None:
+            return
+        exc, axis, loc_i = picked
+        qty = self.spec_quantity.currentData()
+        t, f, S = core.spectrogram(
+            exc.accel[:, axis], exc.dt,
+            window=self.spec_window.currentText(),
+            nperseg=self.spec_nperseg.currentData(),
+            overlap=self.spec_overlap.currentData(),
+            quantity=qty)
+        keep = f <= core.LOWPASS_HZ
+        z = S[keep]
+        label = f'{core.QUANTITY_LABELS[qty]} amplitude [{core.QUANTITY_UNITS[qty]}]'
+        if logy:
+            with np.errstate(divide='ignore'):
+                z = 20 * np.log10(np.maximum(z, 1e-12))
+            label = f'{core.QUANTITY_LABELS[qty]} level [dB re 1 {core.QUANTITY_UNITS[qty]}]'
+        mesh = ax.pcolormesh(t, f[keep], z, shading='auto', cmap='viridis')
+        cb = self.spec_plot.figure.colorbar(mesh, ax=ax)
+        cb.set_label(label)
+        ax.set_xlabel('Time [s]')
+        ax.set_ylabel('Frequency [Hz]')
+        ax.set_title(f'Spectrogram - {core.LOCATION_NAMES[loc_i]} '
+                    f'({core.AXIS_NAMES[axis]})')
+        self.spec_note.setText(
+            f'{self.spec_nperseg.currentData()}-sample segments, '
+            f'{self.spec_window.currentText()} window, '
+            f'{self.spec_overlap.currentData() * 100:.0f}% overlap. Shows '
+            'how the frequency content changes over time -- unlike Welch/'
+            'octave views, which only give the whole-record average.')
+        self.spec_plot.finish(ax)
+
+    def _plot_srs(self, res, logy):
+        ax, = self.spec_plot.axes()
+        picked = self._spec_single_signal(
+            res, ax, 'Pick a single contact point and a single axis (x, y '
+            'or z): SRS is one signal at a time.')
+        if picked is None:
+            return
+        exc, axis, loc_i = picked
+        freqs, srs = core.shock_response_spectrum(exc.accel[:, axis], exc.dt)
+        ax.plot(freqs, srs, lw=1.3, color=SERIES_COLORS[loc_i % len(SERIES_COLORS)],
+               label=core.LOCATION_NAMES[loc_i])
+        ax.set_xscale('log')
+        if logy:
+            ax.set_yscale('log')
+        ax.set_xlabel('Natural frequency [Hz]')
+        ax.set_ylabel('SRS acceleration [m/s$^2$]')
+        ax.set_title(f'Shock Response Spectrum (Q=10) - '
+                    f'{core.LOCATION_NAMES[loc_i]} ({core.AXIS_NAMES[axis]})')
+        ax.legend(fontsize=8)
+        self.spec_note.setText(
+            'Maximax absolute-acceleration SRS: single-DOF base-excited '
+            'system, Q=10 (zeta=0.05), MIL-STD-810 convention. Severity as '
+            'a function of the responding structure\'s natural frequency, '
+            'not a single RMS/peak number.')
         self.spec_plot.finish(ax)
 
     def update_time(self):

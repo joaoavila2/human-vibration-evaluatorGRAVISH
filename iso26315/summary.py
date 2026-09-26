@@ -54,6 +54,16 @@ def normative_criteria(day, position, hours, custom=None):
     out += [Criterion('NHO-09', 'aren', r.aren, 0.5, 1.1, seat),
             Criterion('NHO-09', 'VDVR', r.vdvr, 9.1, 21.0, seat)]
 
+    mtvv_val = nho09.mtvv(blocks, dt)
+    out.append(Criterion('MTVV', 'a_running,max', mtvv_val, np.nan, np.nan,
+                         False, 'informative, running RMS (1 s) peak, ISO '
+                         '2631-1 6.4.2 -- no fixed action/limit pair'))
+
+    msdv_val = nho09.msdv(blocks, dt, hours)
+    out.append(Criterion('MSDV', 'a_wf,z', msdv_val, np.nan, np.nan, False,
+                         'informative, motion sickness dose (Wf, vertical), '
+                         'ISO 2631-1 Sec.7 -- no fixed action/limit pair'))
+
     # d segue sempre Wd/Wd/Wk: e a definicao literal da diretiva, e as duas
     # linhas de criterio abaixo (highest axis / vector sum) representam essa
     # definicao mesmo quando marcadas nao-normativas fora do assento.
