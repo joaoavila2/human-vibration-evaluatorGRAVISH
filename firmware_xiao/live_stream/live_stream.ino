@@ -39,6 +39,16 @@ void setup() {
     // no I2C logo apos o boot.
     delay(200);
 
+    // A IMU onboard de algumas variantes do XIAO Sense fica DESLIGADA por
+    // padrao, controlada por este pino -- sem isso ela nunca responde,
+    // nao importa quanto se espere. #ifdef protege a compilacao em
+    // variantes/cores onde essa constante nao existe.
+#ifdef PIN_LSM6DS3TR_C_POWER
+    pinMode(PIN_LSM6DS3TR_C_POWER, OUTPUT);
+    digitalWrite(PIN_LSM6DS3TR_C_POWER, HIGH);
+    delay(100);
+#endif
+
     myIMU.settings.accelEnabled = 1;
     myIMU.settings.accelRange = ACCEL_RANGE_G;
     myIMU.settings.accelSampleRate = SAMPLE_RATE_HZ;
