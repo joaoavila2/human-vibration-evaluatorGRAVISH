@@ -40,10 +40,11 @@ class _SerialReader(QObject):
     error = Signal(str)
     stopped = Signal()
 
-    def __init__(self, port, buf):
+    def __init__(self, port, buf, stats):
         super().__init__()
         self.port = port
         self.buf = buf
+        self.stats = stats   # dict compartilhado: bytes_total, bytes_descartados
         self._running = True
 
     def stop(self):
@@ -64,11 +65,13 @@ class _SerialReader(QObject):
                 chunk = ser.read(4096)
                 if not chunk:
                     continue
+                self.stats['bytes_total'] += len(chunk)
                 raw.extend(chunk)
                 while len(raw) >= size:
                     sync = raw[0] | (raw[1] << 8)
                     if sync != _SYNC_MARKER:
                         del raw[0]
+                        self.stats['bytes_descartados'] += 1
                         continue
                     _, x, y, z = _SAMPLE_STRUCT.unpack_from(raw, 0)
                     del raw[:size]
@@ -85,6 +88,7 @@ class LiveFFTPanel(QWidget):
         super().__init__()
         self.status = status
         self.buf = deque(maxlen=8192)
+        self.stats = {'bytes_total': 0, 'bytes_descartados': 0}
         self.thread = None
         self.reader = None
         self._build(plot_factory)
@@ -185,8 +189,10 @@ class LiveFFTPanel(QWidget):
             return
 
         self.buf.clear()
+        self.stats['bytes_total'] = 0
+        self.stats['bytes_descartados'] = 0
         self.thread = QThread()
-        self.reader = _SerialReader(port, self.buf)
+        self.reader = _SerialReader(port, self.buf, self.stats)
         self.reader.moveToThread(self.thread)
         self.thread.started.connect(self.reader.run)
         self.reader.error.connect(self._on_error)
@@ -224,8 +230,21 @@ class LiveFFTPanel(QWidget):
         n = len(self.buf)
         window_n = int(self.window_s.value() * self.rate.value())
         if n < 64:
-            self.info.setText(f'{n} amostra(s) recebida(s), aguardando '
-                              f'buffer encher...')
+            bt = self.stats['bytes_total']
+            bd = self.stats['bytes_descartados']
+            if bt == 0:
+                diag = ('nenhum byte chegou da porta ainda -- confira se '
+                        'gravou o live_stream.ino (nao o firmware de '
+                        'gravacao) e se e a porta certa')
+            elif bd > 200 and n == 0:
+                diag = (f'{bt} byte(s) recebido(s), mas {bd} descartado(s) '
+                        f'sem achar o marcador de sincronismo -- provavelmente '
+                        f'esta chegando outra coisa na porta (texto de debug, '
+                        f'firmware errado, ou baud/porta errados), nao o '
+                        f'stream binario esperado')
+            else:
+                diag = f'{bt} byte(s) recebido(s) ate agora'
+            self.info.setText(f'{n} amostra(s) decodificada(s). {diag}.')
             self.info.setStyleSheet(f'color:{TEXT};')
             return
 

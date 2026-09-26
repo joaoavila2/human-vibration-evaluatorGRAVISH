@@ -32,15 +32,37 @@ void setup() {
     unsigned long t0 = millis();
     while (!Serial && (millis() - t0) < 3000) delay(10);
 
+    // Delay minimo FIXO, independente de quanto a espera acima levou. Se o
+    // Monitor Serial ja estava aberto, "Serial" fica true quase instantaneo
+    // e o loop acima quase nao espera -- sem isso, myIMU.begin() podia
+    // rodar cedo demais, antes do chip da IMU estar pronto para responder
+    // no I2C logo apos o boot.
+    delay(200);
+
     myIMU.settings.accelEnabled = 1;
     myIMU.settings.accelRange = ACCEL_RANGE_G;
     myIMU.settings.accelSampleRate = SAMPLE_RATE_HZ;
     myIMU.settings.gyroEnabled = 0;
 
-    if (myIMU.begin() != 0) {
-        if (Serial) Serial.println("ERRO: falha ao iniciar a IMU");
+    bool imuOk = false;
+    for (int tentativa = 1; tentativa <= 5 && !imuOk; tentativa++) {
+        if (myIMU.begin() == 0) {
+            imuOk = true;
+        } else {
+            if (Serial) {
+                Serial.print("Tentativa ");
+                Serial.print(tentativa);
+                Serial.println(" de iniciar a IMU falhou, tentando de novo...");
+            }
+            delay(300);
+        }
+    }
+
+    if (!imuOk) {
+        if (Serial) Serial.println("ERRO: falha ao iniciar a IMU apos 5 tentativas");
         while (1) delay(1000);
     }
+    if (Serial) Serial.println("IMU iniciada, streaming...");
 
     nextSample = micros();
 }
