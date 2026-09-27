@@ -317,16 +317,6 @@ class MainWindow(QMainWindow):
         self.birth.setRange(1900, 2100)
         self.birth.setValue(1950)
         f.addRow('Year of birth', self.birth)
-        self.equation = QComboBox()
-        self.equation.addItems(['Formula (E.2) of the standard',
-                                'Alternative constants (UNVERIFIED)'])
-        self.equation.setItemData(
-            1, 'These constants do not match Annex C\'s real formula '
-               '(confirmed against the ISO 2631-5:2018 text) -- their '
-               'origin could not be traced. Do not use for an actual risk '
-               'determination until this is resolved.',
-            Qt.ToolTipRole)
-        f.addRow('Ultimate strength', self.equation)
         self.protection = QSpinBox()
         self.protection.setRange(1, 99)
         self.protection.setValue(50)
@@ -756,15 +746,14 @@ class MainWindow(QMainWindow):
         indiv = self.rb_indiv.isChecked()
         birth = self.birth.value()
         sub = self.subclass.currentIndex() + 1
-        eq = 2 if self.equation.currentIndex() == 0 else 1
         prot = self.protection.value()
         runner = Runner(self.store)
 
         def job(report):
             runner.progress = report
             if indiv:
-                return runner.run_individual(self.history, birth, sub, eq, prot)
-            return runner.run_orienting(self.history, sub, eq, prot)
+                return runner.run_individual(self.history, birth, sub, protection=prot)
+            return runner.run_orienting(self.history, sub, protection=prot)
 
         self.run_btn.setEnabled(False)
         self.progress.setVisible(True)
@@ -1475,7 +1464,7 @@ class MainWindow(QMainWindow):
             ' '.join(f'{v / 100:g}' for v in core.ENDPLATE_AREA),
             self.birth.value() if a.kind == 'individual' else 1945,
             self.history.first_year, self.history.last_year,
-            2 if self.equation.currentIndex() == 0 else 1,
+            2,  # Formula (E.2) da norma -- unica opcao, ver ultimate_strength()
             self.protection.value(), 6, a.kind,
             *[round(float(v), 5) for v in a.R],
             round(a.max_R, 5), core.DISC_NAMES[a.critical_level],

@@ -420,31 +420,22 @@ def average_dose(daily_doses, days):
 # ----------------------------------------------------------------------
 
 def ultimate_strength(age, equation=2, protection=50):
-    """Resistencia ultima da vertebra, MPa.
+    """Resistencia ultima da vertebra, MPa -- Formula (E.2) da norma,
+    confirmada contra o texto da ISO 2631-5:2018 (6,765024 - 0,067184*idade).
 
-    equation=2 e a Formula (E.2) da norma -- confirmado contra o texto da
-    ISO 2631-5:2018 (6,765024 - 0,067184*idade).
-
-    equation=1 usa as constantes 5,106713/0,037747, herdadas de uma versao
-    anterior deste codigo com o rotulo "alternativa do Anexo C". Auditoria
-    contra o texto da norma (2026-09) NAO confirma essa origem: a formula
-    real do Anexo C (C.4) e' 6,75 - S_age*idade, com S_age = 0,052
-    (homem) / 0,039 (mulher) -- numeros bem diferentes destes. Nao foi
-    possivel rastrear de onde 5,106713/0,037747 vieram. NAO USAR para
-    determinacao de risco real ate a origem ser confirmada ou a opcao ser
-    corrigida pra usar de fato annexc.ultimate_strength() (que exige sexo,
-    ausente desta interface).
+    O parametro equation existe so por compatibilidade de assinatura com
+    quem ja chama esta funcao (risk_factor, risk_factor_with_static);
+    so ha uma formula implementada. Uma opcao "alternativa" existiu antes
+    com constantes (5,106713/0,037747) que a auditoria de 2026-09 nao
+    conseguiu confirmar contra o texto da norma -- removida do programa.
     """
-    offset = 0.0 if protection == 50 else _protection_offset(protection, equation)
-    if equation == 1:
-        return 5.106713 - 0.037747 * np.asarray(age) - offset
+    offset = 0.0 if protection == 50 else _protection_offset(protection)
     return 6.765024 - 0.067184 * np.asarray(age) - offset
 
 
-def _protection_offset(protection, equation):
+def _protection_offset(protection):
     from statistics import NormalDist
-    sigma = 1.0 if equation == 2 else 0.6
-    return -NormalDist().inv_cdf(protection / 100.0) * sigma
+    return -NormalDist().inv_cdf(protection / 100.0)
 
 
 def risk_factor(doses_per_year, days_per_year, start_age,
