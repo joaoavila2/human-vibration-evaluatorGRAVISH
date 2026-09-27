@@ -319,7 +319,13 @@ class MainWindow(QMainWindow):
         f.addRow('Year of birth', self.birth)
         self.equation = QComboBox()
         self.equation.addItems(['Formula (E.2) of the standard',
-                                'Annex C alternative'])
+                                'Alternative constants (UNVERIFIED)'])
+        self.equation.setItemData(
+            1, 'These constants do not match Annex C\'s real formula '
+               '(confirmed against the ISO 2631-5:2018 text) -- their '
+               'origin could not be traced. Do not use for an actual risk '
+               'determination until this is resolved.',
+            Qt.ToolTipRole)
         f.addRow('Ultimate strength', self.equation)
         self.protection = QSpinBox()
         self.protection.setRange(1, 99)

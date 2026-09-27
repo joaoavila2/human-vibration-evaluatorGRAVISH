@@ -422,8 +422,18 @@ def average_dose(daily_doses, days):
 def ultimate_strength(age, equation=2, protection=50):
     """Resistencia ultima da vertebra, MPa.
 
-    equation=2 e a Formula (E.2) da norma; equation=1 usa os coeficientes
-    alternativos do Anexo C. protection=50 protege 50% da populacao.
+    equation=2 e a Formula (E.2) da norma -- confirmado contra o texto da
+    ISO 2631-5:2018 (6,765024 - 0,067184*idade).
+
+    equation=1 usa as constantes 5,106713/0,037747, herdadas de uma versao
+    anterior deste codigo com o rotulo "alternativa do Anexo C". Auditoria
+    contra o texto da norma (2026-09) NAO confirma essa origem: a formula
+    real do Anexo C (C.4) e' 6,75 - S_age*idade, com S_age = 0,052
+    (homem) / 0,039 (mulher) -- numeros bem diferentes destes. Nao foi
+    possivel rastrear de onde 5,106713/0,037747 vieram. NAO USAR para
+    determinacao de risco real ate a origem ser confirmada ou a opcao ser
+    corrigida pra usar de fato annexc.ultimate_strength() (que exige sexo,
+    ausente desta interface).
     """
     offset = 0.0 if protection == 50 else _protection_offset(protection, equation)
     if equation == 1:
@@ -1056,7 +1066,24 @@ def preset_for(config):
             return name
     return None
 
-VALIDITY_PEAK_LIMIT = 9.81      # m/s2, criterio da ISO 2631-5 (6.2)
+VALIDITY_PEAK_LIMIT = 9.81      # m/s2, criterio da ISO 2631-5 (Clausula 4 / A.2)
+
+
+def band_limiting_response(freq, f1=0.4, f2=100.0):
+    """So os dois filtros Butterworth de 2 polos (passa-alta em f1, passa-
+    baixa em f2) que a ISO 2631-1 usa pra limitar banda -- SEM nenhuma
+    ponderacao em cima. E' o que a Clausula 4 / A.2 da ISO 2631-5 manda
+    aplicar antes de checar o limite de pico de 9,81 m/s2 (criterio de
+    aplicabilidade dos Anexos A/E), bem diferente da curva Wk inteira
+    (que soma mais 2 estagios de filtro em cima disso) -- usar Wk ali
+    aplicaria uma atenuacao/formatacao que a norma nao pede nesse teste.
+    """
+    f = np.asarray(freq, dtype=float)
+    s = 1j * 2 * np.pi * np.where(f == 0, 1e-12, f)
+    w1, w2 = 2 * np.pi * f1, 2 * np.pi * f2
+    H = 1.0 / (1 + np.sqrt(2) * w1 / s + (w1 / s) ** 2)       # passa-alta
+    H = H / (1 + np.sqrt(2) * s / w2 + (s / w2) ** 2)          # passa-baixa
+    return np.where(f == 0, 0.0, H)
 
 
 def weighting_response(name, freq):
@@ -1071,9 +1098,7 @@ def weighting_response(name, freq):
     s = 1j * 2 * np.pi * np.where(f == 0, 1e-12, f)
     w = lambda x: 2 * np.pi * x
 
-    w1, w2 = w(p['f1']), w(p['f2'])
-    H = 1.0 / (1 + np.sqrt(2) * w1 / s + (w1 / s) ** 2)       # passa-alta
-    H = H / (1 + np.sqrt(2) * s / w2 + (s / w2) ** 2)          # passa-baixa
+    H = band_limiting_response(freq, p['f1'], p['f2'])
 
     if np.isfinite(p['f4']):                                   # transicao a-v
         w4 = w(p['f4'])
@@ -1129,19 +1154,41 @@ def weighted_metrics(exc, config=None):
     return out
 
 
+def _apply_band_limiting(signal, dt):
+    """Igual a apply_weighting(), mas so com os filtros de banda 0,4-100 Hz
+    (Butterworth de 2 polos cada), sem nenhum estagio de ponderacao em
+    cima -- o que validity_check() precisa, ver band_limiting_response()."""
+    x = np.asarray(signal, dtype=float)
+    n = x.shape[0]
+    X = np.fft.rfft(x, axis=0)
+    f = np.fft.rfftfreq(n, dt)
+    H = band_limiting_response(f)
+    if x.ndim > 1:
+        H = H[:, None]
+    return np.fft.irfft(X * H, n, axis=0)
+
+
 def validity_check(excitations):
     """Criterio de validade dos Anexos A e E da ISO 2631-5.
 
     A norma manda verificar o pico de aceleracao na direcao z, na pessoa,
-    depois de aplicados os filtros limitadores de banda da ISO 2631-1. Acima
-    de 9,81 m/s2 os Anexos A e E nao se aplicam: valem a Clausula 5 e os
+    depois de aplicados os filtros limitadores de banda da ISO 2631-1 (dois
+    Butterworth de 2 polos, 0,4 Hz e 100 Hz -- Clausula 4 / A.2). Acima de
+    9,81 m/s2 os Anexos A e E nao se aplicam: valem a Clausula 5 e os
     Anexos C e D, que tratam de exposicoes com perda de contato.
+
+    IMPORTANTE: isso NAO e' a curva Wk (que tem mais 2 estagios de filtro
+    -- transicao aceleracao-velocidade e degrau ascendente -- em cima da
+    limitacao de banda). Usar Wk aqui, como uma versao anterior deste
+    codigo fazia, aplica atenuacao/formatacao que a norma nao pede nesse
+    teste especifico, podendo mudar a decisao de roteamento Anexo A/E vs.
+    Clausula 5/Anexo C.
     """
     peaks = {}
     for name, exc in excitations.items():
         if not np.any(exc.accel):
             continue
-        z = apply_weighting(exc.accel[:, 2], exc.dt, 'Wk')
+        z = _apply_band_limiting(exc.accel[:, 2], exc.dt)
         peaks[name] = float(np.abs(z).max())
     worst = max(peaks.values()) if peaks else 0.0
     return {

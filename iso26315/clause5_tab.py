@@ -146,6 +146,11 @@ class ClauseFiveTab(QWidget):
         self.days.setRange(1, 365)
         self.days.setValue(240)
         self.days.setSuffix(' days/year')
+        self.days.setToolTip(
+            "Default of 240 days/year, 45 years is Annex A/E's orientating "
+            "schedule (A.3.1), not a Clause 5/Annex C requirement -- Annex "
+            "C's own worked example (C.2) uses 120 days/year over 20 "
+            "years instead. Edit freely to match your actual exposure.")
         g.addRow('Days per year', self.days)
         self.start_age = QSpinBox()
         self.start_age.setRange(1, 90)
@@ -154,6 +159,7 @@ class ClauseFiveTab(QWidget):
         self.years = QSpinBox()
         self.years.setRange(1, 70)
         self.years.setValue(45)
+        self.years.setToolTip(self.days.toolTip())
         g.addRow('Years of exposure', self.years)
         self.run_btn = QPushButton('Run assessment')
         self.run_btn.setEnabled(False)
