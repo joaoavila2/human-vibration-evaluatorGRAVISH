@@ -611,7 +611,10 @@ class MainWindow(QMainWindow):
             'integration (V(f)=A(f)/jw, U(f)=A(f)/-w^2). Visualization '
             'only -- does not change the dose/risk computation, which '
             'always uses acceleration/displacement internally as the norm '
-            'defines.')
+            'defines. For the SRS plot, converts to pseudo-velocity/'
+            'pseudo-displacement instead (SRS/omega_n per natural '
+            'frequency) -- the standard shock-testing convention, not the '
+            'same integration used for the other plots.')
         sg.addWidget(self.spec_quantity, 2, 3)
 
         self.spec_note = QLabel('')
@@ -1051,7 +1054,7 @@ class MainWindow(QMainWindow):
         self.spec_method.setEnabled(kind == 0)
         self.spec_band.setEnabled(kind == 0)
         self.spec_weight.setEnabled(kind == 0)
-        self.spec_quantity.setEnabled(kind in (0, 6))
+        self.spec_quantity.setEnabled(kind in (0, 6, 7))
         if kind == 0:
             self.spec_window.setEnabled(not block)
             self.spec_nperseg.setEnabled(not block)
@@ -1360,21 +1363,30 @@ class MainWindow(QMainWindow):
             return
         exc, axis, loc_i = picked
         freqs, srs = core.shock_response_spectrum(exc.accel[:, axis], exc.dt)
-        ax.plot(freqs, srs, lw=1.3, color=SERIES_COLORS[loc_i % len(SERIES_COLORS)],
+        quantity = self.spec_quantity.currentData()
+        y, ylabel = core.srs_quantity(freqs, srs, quantity)
+        ax.plot(freqs, y, lw=1.3, color=SERIES_COLORS[loc_i % len(SERIES_COLORS)],
                label=core.LOCATION_NAMES[loc_i])
         ax.set_xscale('log')
         if logy:
             ax.set_yscale('log')
         ax.set_xlabel('Natural frequency [Hz]')
-        ax.set_ylabel('SRS acceleration [m/s$^2$]')
+        ax.set_ylabel(ylabel)
         ax.set_title(f'Shock Response Spectrum (Q=10) - '
                     f'{core.LOCATION_NAMES[loc_i]} ({core.AXIS_NAMES[axis]})')
         ax.legend(fontsize=8)
-        self.spec_note.setText(
-            'Maximax absolute-acceleration SRS: single-DOF base-excited '
-            'system, Q=10 (zeta=0.05), MIL-STD-810 convention. Severity as '
-            'a function of the responding structure\'s natural frequency, '
-            'not a single RMS/peak number.')
+        note = ('Maximax absolute-acceleration SRS: single-DOF base-excited '
+                'system, Q=10 (zeta=0.05), MIL-STD-810 convention. Severity as '
+                'a function of the responding structure\'s natural frequency, '
+                'not a single RMS/peak number. Frequency division: 12 points '
+                'per octave (fractional-octave spacing, ASTM E1049 '
+                'convention).')
+        if quantity != 'accel':
+            note += (' Pseudo-' + quantity + ' = SRS acceleration divided '
+                    'by the natural frequency of each point\'s own '
+                    'single-DOF system, not a frequency-domain integration '
+                    'of the signal.')
+        self.spec_note.setText(note)
         self.spec_plot.finish(ax)
 
     def update_time(self):

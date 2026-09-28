@@ -699,7 +699,18 @@ def spectrogram(x, dt, window='Hann', nperseg=1024, overlap=0.5, quantity='accel
     return t, f, S
 
 
-def shock_response_spectrum(x, dt, freqs=None, q=10.0):
+def _octave_spaced_freqs(f_start, f_end, points_per_octave):
+    """Frequencias em passo de oitava fracionaria (razao 2^(1/n)), a
+    convencao real de ASTM E1049/MIL-STD-810 para reportar SRS -- permite
+    comparar resultados entre laboratorios/ferramentas diferentes, ao
+    contrario de um numero arbitrario de pontos log-espacados.
+    """
+    n_octaves = np.log2(f_end / f_start)
+    n_points = int(np.ceil(n_octaves * points_per_octave)) + 1
+    return f_start * 2.0 ** (np.arange(n_points) / points_per_octave)
+
+
+def shock_response_spectrum(x, dt, freqs=None, q=10.0, points_per_octave=12):
     """SRS maximax de aceleracao absoluta: resposta de um sistema massa-
     mola-amortecedor de 1 grau de liberdade excitado pela base, simulada
     por frequencia natural via filtro digital (bilinear), tomando o pico
@@ -711,14 +722,26 @@ def shock_response_spectrum(x, dt, freqs=None, q=10.0):
     ressoante ele mais excitaria.
 
     q = fator de qualidade (Q = 1/(2*zeta)); Q=10 (zeta=0,05) e' a
-    convencao mais comum.
+    convencao mais comum -- confirmada tambem como "standard value" no
+    manual de SRS de uma ferramenta comercial (Dewesoft), independente do
+    MIL-STD-810.
+
+    points_per_octave controla a resolucao em frequencia quando freqs=None,
+    em oitava fracionaria (2^(1/n)) -- a mesma convencao usada por
+    ferramentas de choque comerciais (ali, um menu com 3/6/12/24/48 pontos
+    por oitava), em vez de um numero arbitrario de pontos log-espacados.
+
+    O offset DC (media do registro inteiro) e' removido antes do filtro:
+    sem isso, qualquer deriva estatica do acelerometro vaza para a resposta
+    de baixa frequencia dos sistemas de 1 GL, inflando o SRS ali.
     """
     from scipy.signal import cont2discrete, lfilter
     if freqs is None:
         f_max = min(500.0, 0.4 / dt)
-        freqs = np.geomspace(2.0, f_max, 80)
+        freqs = _octave_spaced_freqs(2.0, f_max, points_per_octave)
     zeta = 1.0 / (2 * q)
     x = np.asarray(x, dtype=float)
+    x = x - x.mean()
     srs = np.empty(len(freqs))
     for i, fn in enumerate(freqs):
         wn = 2 * np.pi * fn
@@ -728,6 +751,31 @@ def shock_response_spectrum(x, dt, freqs=None, q=10.0):
         resp = lfilter(bd[0], ad, x)
         srs[i] = np.abs(resp).max()
     return freqs, srs
+
+
+def srs_quantity(freqs, srs_accel, quantity):
+    """Converte um SRS de aceleracao para pseudo-velocidade/pseudo-
+    deslocamento -- convencao padrao de teste de choque (MIL-STD-810,
+    ASTM E1049), usada por ferramentas comerciais de SRS (ex. Dewesoft,
+    que mostra Acceleration/Velocity/Displacement lado a lado).
+
+    Diferenca importante em relacao a _convert_quantity(): ali a conversao
+    e' por integracao no dominio da frequencia de um espectro CONTINUO
+    (V(f)=A(f)/jw). Aqui cada ponto do SRS ja e' a resposta de PICO de um
+    sistema de 1 grau de liberdade distinto, com sua propria frequencia
+    natural -- a conversao e' ponto a ponto pela frequencia natural DAQUELE
+    sistema (pseudo-velocidade = SRS/omega_n), nao uma integracao do sinal.
+    """
+    label = QUANTITY_LABELS[quantity]
+    unit = QUANTITY_UNITS[quantity]
+    if quantity == 'accel':
+        return srs_accel, f'SRS {label.lower()} [{unit}]'
+    w = 2 * np.pi * np.asarray(freqs, dtype=float)
+    n = 1 if quantity == 'velocity' else 2
+    with np.errstate(divide='ignore', invalid='ignore'):
+        y = srs_accel / w ** n
+    y = np.where(w > 0, y, 0.0)
+    return y, f'SRS pseudo-{label.lower()} [{unit}]'
 
 
 def third_octave_rms(x, dt, window='Hann', nperseg=8192, overlap=0.5):
