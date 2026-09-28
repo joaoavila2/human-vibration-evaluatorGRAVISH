@@ -14,8 +14,6 @@ Uso:
     python csv_datetime_to_annex_txt.py arquivo.csv          # sem --rate: infere da media do DateTime (menos preciso)
 """
 import argparse
-import csv
-import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -30,63 +28,14 @@ def _parse_datetime(s):
     return datetime.strptime(s.strip(), '%Y-%m-%d %H:%M:%S.%f')
 
 
-_META_RE = re.compile(r'rate_hz=([\d.]+)')
-
-
-def _read_segments(path):
-    """Le o CSV e separa em segmentos a cada linha de cabecalho repetida.
-
-    Firmwares mais antigos geravam o nome do arquivo a partir da hora de
-    COMPILACAO, nao da hora real de cada boot -- resetar a placa reabria o
-    mesmo nome (em modo append), concatenando sessoes diferentes no mesmo
-    arquivo, cada uma com sua propria contagem de tempo. Tratar isso como
-    uma unica serie continua inventaria uma base de tempo que nunca
-    existiu -- por isso ainda separamos por seguranca, mesmo que o
-    firmware atual (VCI_nRF52840_accel_SD_v2.ino) ja nao tenha mais esse
-    bug (nome de arquivo por indice de sessao persistente).
-
-    Se o arquivo tiver uma linha "# rate_hz=<valor> ..." antes do
-    cabecalho (escrita pelo firmware v2), a taxa vem dali -- ver
-    metadata_rate no retorno de cada segmento.
-
-    Retorna uma lista de (linhas, metadata_rate_ou_None).
+def convert(path, rate=None, out_dir=None):
+    """Separacao em segmentos e leitura do CSV: ver
+    fielddata.read_datetime_csv_segments -- mesma funcao usada pela
+    importacao direta na aba Directive, para nao ter duas implementacoes
+    do mesmo parsing.
     """
     path = Path(path)
-    segments = []          # lista de listas de (datetime_str, [ax,ay,az])
-    metadata_rates = []    # taxa lida do "# rate_hz=..." de cada segmento
-    pending_rate = None
-    idx_t = idxs = None
-
-    with open(path, newline='') as f:
-        reader = csv.reader(f)
-        for row in reader:
-            if not row:
-                continue
-            first = row[0].strip()
-
-            if first.startswith('#'):
-                m = _META_RE.search(first)
-                if m:
-                    pending_rate = float(m.group(1))
-                continue
-
-            if first == 'DateTime':
-                header = [c.strip() for c in row]
-                idx_t = header.index('DateTime')
-                idxs = [header.index(c) for c in ('AX', 'AY', 'AZ')]
-                segments.append([])
-                metadata_rates.append(pending_rate)
-                pending_rate = None
-                continue
-
-            segments[-1].append((row[idx_t], [float(row[i]) for i in idxs]))
-
-    return [(seg, rate) for seg, rate in zip(segments, metadata_rates) if seg]
-
-
-def convert(path, rate=None, out_dir=None):
-    path = Path(path)
-    segments = _read_segments(path)
+    segments = fd.read_datetime_csv_segments(path)
     out_dir = Path(out_dir) if out_dir else path.parent
     results = []
 

@@ -416,6 +416,7 @@ class ClauseFiveTab(QWidget):
             return
         r = self.result
         kind = self.plot_kind.currentIndex()
+        self.plot.reset_if_changed(kind)
 
         if kind == 2:
             f = np.logspace(-1, np.log10(100), 600)

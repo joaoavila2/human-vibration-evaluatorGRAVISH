@@ -1204,6 +1204,7 @@ class FieldPanel(QWidget):
         if self.day is None:
             return
         k = self.kind.currentIndex()
+        self.plot.reset_if_changed(k)
         d = self.day
 
         if k == 0:

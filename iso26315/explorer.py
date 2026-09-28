@@ -268,6 +268,7 @@ class SignalExplorer(QWidget):
     def refresh(self):
         kind = self.kind.currentIndex()
         # 0 time series, 1 spectrum, 2 cumulative RMS, 3 phase, 4 coherence.
+        self.plot.reset_if_changed(kind)
         spectrum_kind = kind == 1
         phase_kind = kind == 3
         coherence_kind = kind == 4

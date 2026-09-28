@@ -25,7 +25,8 @@ from .clause5_tab import ClauseFiveTab
 from .explorer import SignalExplorer
 from .field_explorer import FieldSignalExplorer
 from .field_panel import FieldPanel
-from .csv_import_panel import CsvImportPanel
+from .csv_import_panel import (
+    CsvImportPanel, DatetimeCsvImportPanel, TxtImportPanel)
 from .live_fft_panel import LiveFFTPanel
 from .qtworker import Worker
 from .theme import (ACCENT, BAD_COLOR, BG_ALT, BORDER, HIGHLIGHT, OK_COLOR,
@@ -96,6 +97,8 @@ class Plot(QWidget):
 
         self._window = None
         self._saved = None
+        self._force_reset = False
+        self._last_kind = object()      # sentinel: primeira chamada sempre "muda"
         self.canvas.mpl_connect('button_press_event', self._on_click)
         QShortcut(QKeySequence('F11'), self, self.toggle_fullscreen)
 
@@ -165,6 +168,21 @@ class Plot(QWidget):
         tb = self._toolbar()
         return tb is not None and len(getattr(tb, '_nav_stack', [])) > 1
 
+    def reset_if_changed(self, kind):
+        """Descarta o enquadramento salvo se `kind` mudou desde a ultima
+        chamada -- equivalente a apertar Home no grafico.
+
+        `kind` e qualquer valor que identifique o TIPO de grafico atual
+        (tipicamente o indice do combo "Plot"). Trocar de eixo, janela ou
+        escala dentro do MESMO tipo continua preservando o zoom
+        normalmente (ver axes()); so a mudanca de dominio (ex. serie
+        temporal -> FFT, onde os eixos antigos nao significam nada no
+        grafico novo) forca o proximo axes()/finish() a comecar do zero.
+        """
+        if kind != self._last_kind:
+            self._force_reset = True
+            self._last_kind = kind
+
     def axes(self, n=1):
         """Limpa a figura e devolve os eixos, preservando o enquadramento.
 
@@ -172,12 +190,17 @@ class Plot(QWidget):
         aplicado. Como quase toda mudanca de controle redesenha, o zoom
         parecia nao funcionar. Aqui o enquadramento e guardado e reposto,
         desde que o usuario tenha de fato navegado; o botao Home volta ao
-        enquadramento completo.
+        enquadramento completo. reset_if_changed() pode forcar o descarte
+        mesmo com navegacao, quando o TIPO de grafico muda.
         """
         old = self.figure.axes
-        self._saved = ([(a.get_xlim(), a.get_ylim()) for a in old]
-                       if old and len(old) == n and self._user_navigated()
-                       else None)
+        if self._force_reset:
+            self._saved = None
+            self._force_reset = False
+        else:
+            self._saved = ([(a.get_xlim(), a.get_ylim()) for a in old]
+                           if old and len(old) == n and self._user_navigated()
+                           else None)
         self.figure.clear()
         if n == 1:
             return [self.figure.add_subplot(111)]
@@ -227,7 +250,9 @@ class MainWindow(QMainWindow):
         self.sens_grid = None
 
         tabs = QTabWidget()
-        tabs.addTab(self._build_setup(), 'Annex A / Annex E')
+        tabs.addTab(self._build_home(), 'Home')
+        self._setup_page = self._build_setup()
+        tabs.addTab(self._setup_page, 'Annex A / Annex E')
         self.clause5 = ClauseFiveTab(Plot, self.status)
         self.explorer = SignalExplorer(Plot, self.status)
         # As abas que so fazem sentido depois de uma analise ficam escondidas
@@ -248,10 +273,16 @@ class MainWindow(QMainWindow):
         explorer_tabs.addTab(self.explorer, 'ASCII records')
         explorer_tabs.addTab(self.field_explorer, 'Field logger records (.m)')
         explorer_tabs.addTab(self.field, 'Directive')
+        _to_directive = lambda: explorer_tabs.setCurrentWidget(self.field)
         self.csv_import = CsvImportPanel(
-            self.field, self.status,
-            on_loaded=lambda: explorer_tabs.setCurrentWidget(self.field))
+            self.field, self.status, on_loaded=_to_directive)
         explorer_tabs.addTab(self.csv_import, 'Continuous CSV import')
+        self.txt_import = TxtImportPanel(
+            self.field, self.status, on_loaded=_to_directive)
+        explorer_tabs.addTab(self.txt_import, 'ASCII .txt import')
+        self.datetime_csv_import = DatetimeCsvImportPanel(
+            self.field, self.status, on_loaded=_to_directive)
+        explorer_tabs.addTab(self.datetime_csv_import, 'DateTime CSV import')
         self.explorer_tabs = explorer_tabs
         tabs.addTab(explorer_tabs, 'Signal explorer')
         self.live_fft = LiveFFTPanel(Plot, self.status)
@@ -270,6 +301,79 @@ class MainWindow(QMainWindow):
 
     def status(self, msg):
         self.statusBar().showMessage(msg)
+
+    # -- Home ------------------------------------------------------------
+    def _build_home(self):
+        page = QWidget()
+        outer = QVBoxLayout(page)
+        outer.addStretch(1)
+
+        col = QVBoxLayout()
+        col.setSpacing(6)
+
+        logo = QLabel()
+        pix = QPixmap(str(asset('icon.png')))
+        if not pix.isNull():
+            logo.setPixmap(pix.scaledToWidth(
+                200, Qt.SmoothTransformation))
+        logo.setAlignment(Qt.AlignCenter)
+        col.addWidget(logo)
+
+        title = QLabel(APP_NAME)
+        title.setAlignment(Qt.AlignCenter)
+        f = title.font()
+        f.setPointSize(f.pointSize() + 7)
+        f.setBold(True)
+        title.setFont(f)
+        col.addWidget(title)
+
+        subtitle = QLabel(
+            f'v{__version__} — Grupo de Acústica e Vibrações em Seres '
+            f'Humanos (GRAVI-SH), Universidade Federal de Minas Gerais')
+        subtitle.setAlignment(Qt.AlignCenter)
+        subtitle.setObjectName('muted')
+        subtitle.setWordWrap(True)
+        col.addWidget(subtitle)
+        col.addSpacing(14)
+
+        desc = QLabel(
+            'Assessment of health risk from whole-body vibration and '
+            'mechanical shock, implementing ISO 2631-5:2018 (Annex A/E '
+            'dynamic compressive force and Clause 5/Annex C simplified '
+            'dose), ISO 2631-1:1997 (frequency weighting), Fundacentro '
+            'NHO-09 and EU Directive 2002/44/EC.')
+        desc.setAlignment(Qt.AlignCenter)
+        desc.setWordWrap(True)
+        desc.setMaximumWidth(620)
+        col.addWidget(desc)
+        col.addSpacing(18)
+
+        guide = QGroupBox('Where to start')
+        gl = QVBoxLayout(guide)
+        for name, hint in [
+            ('Annex A / Annex E', 'Shock/impact exposure history and '
+             'spinal compressive-force risk (R^A).'),
+            ('Clause 5 / Annex C', 'Simplified acceleration-dose risk '
+             'model, for exposures outside the Annex A/E validity range.'),
+            ('Signal explorer', 'Inspect raw records (ASCII, field logger '
+             '.m, CSV) before building an exposure history, or run the '
+             'NHO-09/Directive assessment on a field-logged day.'),
+            ('Live FFT (Xiao)', 'Real-time spectrum from the Xiao IMU '
+             'over a serial connection.'),
+        ]:
+            row = QLabel(f'<b>{name}</b> — {hint}')
+            row.setWordWrap(True)
+            gl.addWidget(row)
+        guide.setMaximumWidth(620)
+        col.addWidget(guide)
+
+        wrap = QHBoxLayout()
+        wrap.addStretch(1)
+        wrap.addLayout(col)
+        wrap.addStretch(1)
+        outer.addLayout(wrap)
+        outer.addStretch(2)
+        return page
 
     # -- Setup ---------------------------------------------------------
     def _build_setup(self):
@@ -793,7 +897,8 @@ class MainWindow(QMainWindow):
     def _reveal_result_tabs(self):
         if self._tabs_shown:
             return
-        for i, (widget, title) in enumerate(self._result_tabs, start=1):
+        start = self.tabs.indexOf(self._setup_page) + 1
+        for i, (widget, title) in enumerate(self._result_tabs, start=start):
             self.tabs.insertTab(i, widget, title)
         self._tabs_shown = True
 
@@ -931,6 +1036,7 @@ class MainWindow(QMainWindow):
         # 0 accel spectrum, 1 phase, 2 coherence, 3 force spectrum,
         # 4 transfer functions, 5 dose vs static stress, 6 spectrogram,
         # 7 shock response spectrum.
+        self.spec_plot.reset_if_changed(kind)
         self.spec_loc.setEnabled(kind in (0, 1, 2, 6, 7))
         self.spec_loc_label.setText(
             'Reference point' if kind == 2 else 'Contact point')

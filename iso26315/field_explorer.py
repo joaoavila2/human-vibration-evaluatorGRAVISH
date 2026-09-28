@@ -226,6 +226,7 @@ class FieldSignalExplorer(QWidget):
     # ------------------------------------------------------------------
     def refresh(self):
         kind = self.kind.currentIndex()
+        self.plot.reset_if_changed(kind)
         self.window.setEnabled(kind == 1)
         self.conem.setEnabled(kind == 1)
         self.block_index.setEnabled(kind == 2)

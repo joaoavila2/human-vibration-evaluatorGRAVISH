@@ -380,6 +380,42 @@ def load_day(paths, calibrate=False, rate=NOMINAL_RATE, progress=None,
                     rate=rate)
 
 
+def _record_from_accel_g(accel_g, rate, path, extra_notes=()):
+    """Constroi um FieldRecord a partir de um fluxo continuo de aceleracao
+    em g, fatiando em blocos fixos de BLOCK_SAMPLES amostras consecutivas,
+    sem lacuna (duty_cycle ~1.0). Nucleo comum reaproveitado por
+    read_csv_accel (CSV Time_ms), read_ascii_accel (.txt do Anexo A/E) e
+    load_day_csv_datetime (CSV DateTime do firmware VCI_nRF52840) -- so a
+    forma de obter accel_g e rate muda entre os tres.
+    """
+    path = Path(path)
+    n_total = len(accel_g)
+    n_blocks = n_total // BLOCK_SAMPLES
+    if n_blocks == 0:
+        faltam_s = (BLOCK_SAMPLES - n_total) / rate
+        total_necessario_s = BLOCK_SAMPLES / rate
+        raise ValueError(
+            f'{path.name}: so {n_total} amostra(s), menos que as '
+            f'{BLOCK_SAMPLES} de um bloco. Na taxa informada ({rate:g} Hz), '
+            f'precisa de pelo menos {total_necessario_s:.1f} s de gravacao '
+            f'(faltam ~{faltam_s:.1f} s neste arquivo) -- grave mais tempo')
+
+    counts = (accel_g[:n_blocks * BLOCK_SAMPLES] * LSB_PER_G).reshape(
+        n_blocks, BLOCK_SAMPLES, 3)
+    block_period = BLOCK_SAMPLES / rate
+    seconds = np.arange(n_blocks, dtype=float) * block_period
+
+    rec = FieldRecord(path=path, counts=counts, seconds=seconds, rate=rate)
+    dropped = n_total - n_blocks * BLOCK_SAMPLES
+    if dropped:
+        rec.notes.append(
+            f'{dropped} amostra(s) no final descartada(s) (sobra menor que '
+            f'um bloco de {BLOCK_SAMPLES})')
+    rec.notes.extend(extra_notes)
+    rec.gravity_axis = int(np.argmax(np.abs(rec.counts[0].mean(0))))
+    return rec
+
+
 def read_csv_accel(path, rate, columns=('AX', 'AY', 'AZ'), time_column='Time_ms'):
     """Le um CSV de aceleracao continua (ja em g), tipo Time_ms,AX,AY,AZ --
     formato de sketches de bancada, diferente do .m do registrador de campo.
@@ -409,30 +445,168 @@ def read_csv_accel(path, rate, columns=('AX', 'AY', 'AZ'), time_column='Time_ms'
         rows = [[float(row[i]) for i in idxs] for row in reader if row]
 
     accel_g = np.array(rows, dtype=np.float64)   # (n, 3), ja em g
-    n_total = len(accel_g)
-    n_blocks = n_total // BLOCK_SAMPLES
-    if n_blocks == 0:
-        faltam_s = (BLOCK_SAMPLES - n_total) / rate
-        total_necessario_s = BLOCK_SAMPLES / rate
-        raise ValueError(
-            f'{path.name}: so {n_total} amostra(s), menos que as '
-            f'{BLOCK_SAMPLES} de um bloco. Na taxa informada ({rate:g} Hz), '
-            f'precisa de pelo menos {total_necessario_s:.1f} s de gravacao '
-            f'(faltam ~{faltam_s:.1f} s neste arquivo) -- grave mais tempo')
+    return _record_from_accel_g(accel_g, rate, path)
 
-    counts = (accel_g[:n_blocks * BLOCK_SAMPLES] * LSB_PER_G).reshape(
-        n_blocks, BLOCK_SAMPLES, 3)
-    block_period = BLOCK_SAMPLES / rate
-    seconds = np.arange(n_blocks, dtype=float) * block_period
 
-    rec = FieldRecord(path=path, counts=counts, seconds=seconds, rate=rate)
-    dropped = n_total - n_blocks * BLOCK_SAMPLES
-    if dropped:
-        rec.notes.append(
-            f'{dropped} amostra(s) no final descartada(s) (sobra menor que '
-            f'um bloco de {BLOCK_SAMPLES})')
-    rec.gravity_axis = int(np.argmax(np.abs(rec.counts[0].mean(0))))
-    return rec
+def read_ascii_accel(path):
+    """Le o .txt ASCII de 4 colunas (tempo, ax, ay, az em m/s2) do Anexo
+    A/E -- o mesmo arquivo que core.read_excitation le -- e fatia em blocos
+    fixos de BLOCK_SAMPLES para entrar no pipeline de dia de campo
+    (NHO-09/Diretiva). Ao contrario do CSV Time_ms, a taxa NAO precisa ser
+    informada: vem da propria base de tempo uniforme do arquivo (ja
+    validada por core.read_excitation).
+    """
+    from . import core
+    exc = core.read_excitation(path)
+    rate = exc.sample_rate
+    accel_g = exc.accel / GRAVITY_BH
+    return _record_from_accel_g(accel_g, rate, path)
+
+
+def load_day_txt(paths, position='seat', progress=None):
+    """Le um conjunto de .txt ASCII (Anexo A/E) como um dia continuo --
+    mesmo formato de retorno de load_day()/load_day_csv().
+
+    Cada arquivo tem sua propria taxa de amostragem inferida (ver
+    read_ascii_accel); arquivos com taxas incompativeis entre si (>1% de
+    diferenca) sao rejeitados, porque FieldDay assume uma unica rate para
+    o dia inteiro (dt de blocos concatenados).
+    """
+    recs, blocks, secs, occ = [], [], [], []
+    for i, p in enumerate(sorted(paths)):
+        if progress:
+            progress(i / max(len(paths), 1), f'Reading {Path(p).name}')
+        rec = read_ascii_accel(p)
+        if recs and abs(rec.rate - recs[0].rate) > 0.01 * recs[0].rate:
+            raise ValueError(
+                f'{Path(p).name}: taxa de amostragem ({rec.rate:.2f} Hz) nao '
+                f'bate com a do primeiro arquivo ({recs[0].rate:.2f} Hz) -- '
+                f'selecione arquivos de uma unica sessao de gravacao')
+        set_orientation(rec, rec.gravity_axis, position=position)
+        recs.append(rec)
+        blocks.append(rec.blocks_si())
+        secs.append(rec.seconds)
+        occ.append(occupancy_mask(rec))
+    if not recs:
+        raise ValueError('Nenhum arquivo .txt valido selecionado.')
+    return FieldDay(records=recs, blocks=np.concatenate(blocks),
+                    seconds=np.concatenate(secs), occupied=np.concatenate(occ),
+                    rate=recs[0].rate)
+
+
+_DATETIME_META_RE = re.compile(r'rate_hz=([\d.]+)')
+
+
+def read_datetime_csv_segments(path):
+    """Le um CSV 'DateTime,AX,AY,AZ' (g) do firmware VCI_nRF52840, separado
+    em segmentos a cada linha de cabecalho repetida.
+
+    Firmwares mais antigos geravam o nome do arquivo a partir da hora de
+    COMPILACAO, nao da hora real de cada boot -- resetar a placa reabria o
+    mesmo nome (modo append), concatenando sessoes diferentes no mesmo
+    arquivo, cada uma com sua propria contagem de tempo. Tratar isso como
+    uma unica serie continua inventaria uma base de tempo que nunca
+    existiu, por isso ainda se separa por seguranca, mesmo que o firmware
+    atual (VCI_nRF52840_accel_SD_v2.ino) ja nao tenha mais esse bug (nome
+    de arquivo por indice de sessao persistente).
+
+    Se o arquivo tiver uma linha '# rate_hz=<valor> ...' antes do
+    cabecalho (escrita pelo firmware v2), a taxa vem dali -- ver o segundo
+    elemento de cada item retornado.
+
+    Devolve uma lista de (linhas, metadata_rate_ou_None), onde linhas e uma
+    lista de (datetime_str, [ax, ay, az]).
+    """
+    import csv as csv_module
+
+    path = Path(path)
+    segments = []
+    metadata_rates = []
+    pending_rate = None
+    idx_t = idxs = None
+
+    with open(path, newline='', errors='replace') as f:
+        reader = csv_module.reader(f)
+        for row in reader:
+            if not row:
+                continue
+            first = row[0].strip()
+
+            if first.startswith('#'):
+                m = _DATETIME_META_RE.search(first)
+                if m:
+                    pending_rate = float(m.group(1))
+                continue
+
+            if first == 'DateTime':
+                header = [c.strip() for c in row]
+                idx_t = header.index('DateTime')
+                idxs = [header.index(c) for c in ('AX', 'AY', 'AZ')]
+                segments.append([])
+                metadata_rates.append(pending_rate)
+                pending_rate = None
+                continue
+
+            segments[-1].append((row[idx_t], [float(row[i]) for i in idxs]))
+
+    return [(seg, rate) for seg, rate in zip(segments, metadata_rates) if seg]
+
+
+def _estimate_datetime_rate(rows):
+    """Taxa media pela diferenca de timestamp DateTime -- resolucao de 1 ms
+    so, grosseira demais perto de altas taxas; ultimo recurso, quando nao
+    ha --rate explicito nem metadado '# rate_hz=' no arquivo.
+    """
+    from datetime import datetime
+    t0 = datetime.strptime(rows[0][0].strip(), '%Y-%m-%d %H:%M:%S.%f')
+    t1 = datetime.strptime(rows[-1][0].strip(), '%Y-%m-%d %H:%M:%S.%f')
+    span_s = (t1 - t0).total_seconds()
+    if span_s <= 0:
+        raise ValueError('base de tempo DateTime nao permite estimar a taxa')
+    return (len(rows) - 1) / span_s
+
+
+def load_day_csv_datetime(paths, rate=None, position='seat', progress=None):
+    """Le um conjunto de CSVs 'DateTime,AX,AY,AZ' (g) do firmware
+    VCI_nRF52840 como um dia -- mesmo dado que csv_datetime_to_annex_txt.py
+    converte para .txt, mas direto, sem passar por um arquivo intermediario.
+
+    Cada segmento de boot (ver read_datetime_csv_segments) vira um
+    FieldRecord proprio. Prioridade da taxa: rate explicito (parametro) >
+    metadado '# rate_hz=' do arquivo > estimativa pelo DateTime (menos
+    precisa, registrada em rec.notes).
+    """
+    paths = sorted(paths)
+    jobs = []
+    for p in paths:
+        for i, (rows, meta_rate) in enumerate(read_datetime_csv_segments(p)):
+            jobs.append((p, i, rows, meta_rate))
+    if not jobs:
+        raise ValueError('Nenhum segmento com dado suficiente encontrado.')
+
+    recs, blocks, secs, occ = [], [], [], []
+    for j, (p, i, rows, meta_rate) in enumerate(jobs):
+        if progress:
+            progress(j / len(jobs), f'Reading {Path(p).name} '
+                     f'(segment {i + 1})')
+        seg_rate = rate if rate is not None else meta_rate
+        notes = []
+        if seg_rate is None:
+            seg_rate = _estimate_datetime_rate(rows)
+            notes.append(
+                f'taxa nao informada nem no cabecalho do arquivo; estimada '
+                f'pelo DateTime (resolucao de 1 ms): {seg_rate:.2f} Hz')
+        accel_g = np.array([axes for _, axes in rows], dtype=np.float64)
+        name = f'{Path(p).name}#{i + 1}' if len(jobs) > 1 else Path(p).name
+        rec = _record_from_accel_g(accel_g, seg_rate, name, extra_notes=notes)
+        set_orientation(rec, rec.gravity_axis, position=position)
+        recs.append(rec)
+        blocks.append(rec.blocks_si())
+        secs.append(rec.seconds)
+        occ.append(occupancy_mask(rec))
+    return FieldDay(records=recs, blocks=np.concatenate(blocks),
+                    seconds=np.concatenate(secs), occupied=np.concatenate(occ),
+                    rate=recs[0].rate)
 
 
 def load_day_csv(paths, rate, position='seat', progress=None):
