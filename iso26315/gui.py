@@ -634,6 +634,50 @@ class MainWindow(QMainWindow):
         self.spec_weight.changed.connect(self.update_spectra)
         lay.addWidget(self.spec_weight)
 
+        limit_box = QGroupBox('Reference limit curve (optional)')
+        self.spec_limit_box = limit_box
+        limit_v = QVBoxLayout(limit_box)
+        self.spec_limit_enable = QCheckBox(
+            'Show a limit curve on the excitation acceleration spectrum')
+        self.spec_limit_enable.setToolTip(
+            'Overlays a user-defined upper-bound curve (frequency, limit) '
+            'on the plot and flags whether the measured spectrum crosses '
+            'it anywhere within the frequency range the curve covers. '
+            'Only evaluated when a single contact point AND a single axis '
+            'are picked above -- a limit check against several overlaid '
+            'series at once would be ambiguous.')
+        limit_v.addWidget(self.spec_limit_enable)
+
+        table_row = QHBoxLayout()
+        self.spec_limit_table = QTableWidget(0, 2)
+        self.spec_limit_table.setHorizontalHeaderLabels(
+            ['Frequency [Hz]', 'Limit (same units as the plot)'])
+        self.spec_limit_table.verticalHeader().setVisible(False)
+        self.spec_limit_table.setMaximumHeight(90)
+        self.spec_limit_table.horizontalHeader().setStretchLastSection(True)
+        table_row.addWidget(self.spec_limit_table, 1)
+        btn_col = QVBoxLayout()
+        add_row_btn = QPushButton('+ row')
+        add_row_btn.setObjectName('secondary')
+        add_row_btn.clicked.connect(self._add_limit_row)
+        btn_col.addWidget(add_row_btn)
+        del_row_btn = QPushButton('- row')
+        del_row_btn.setObjectName('secondary')
+        del_row_btn.clicked.connect(self._remove_limit_row)
+        btn_col.addWidget(del_row_btn)
+        btn_col.addStretch()
+        table_row.addLayout(btn_col)
+        limit_v.addLayout(table_row)
+
+        self.spec_limit_status = QLabel('')
+        self.spec_limit_status.setWordWrap(True)
+        limit_v.addWidget(self.spec_limit_status)
+        limit_box.setMaximumHeight(190)
+        lay.addWidget(limit_box)
+
+        self.spec_limit_enable.toggled.connect(self.update_spectra)
+        self.spec_limit_table.itemChanged.connect(self._on_limit_table_changed)
+
         for w in (self.spec_exp, self.spec_kind, self.spec_loc, self.spec_axis,
                   self.spec_disc):
             w.currentIndexChanged.connect(self.update_spectra)
@@ -1031,6 +1075,100 @@ class MainWindow(QMainWindow):
         v = combo.currentData()
         return list(range(total)) if v is None else [v]
 
+    def _add_limit_row(self):
+        r = self.spec_limit_table.rowCount()
+        self.spec_limit_table.insertRow(r)
+        self.spec_limit_table.setItem(r, 0, QTableWidgetItem(''))
+        self.spec_limit_table.setItem(r, 1, QTableWidgetItem(''))
+
+    def _remove_limit_row(self):
+        r = self.spec_limit_table.currentRow()
+        if r >= 0:
+            self.spec_limit_table.removeRow(r)
+        if self.spec_limit_enable.isChecked():
+            self.update_spectra()
+
+    def _on_limit_table_changed(self, *_):
+        if self.spec_limit_enable.isChecked():
+            self.update_spectra()
+
+    def _limit_curve_data(self):
+        freqs, vals = [], []
+        for r in range(self.spec_limit_table.rowCount()):
+            fi = self.spec_limit_table.item(r, 0)
+            vi = self.spec_limit_table.item(r, 1)
+            if fi is None or vi is None:
+                continue
+            ft, vt = fi.text().strip(), vi.text().strip()
+            if not ft or not vt:
+                continue
+            try:
+                freqs.append(float(ft.replace(',', '.')))
+                vals.append(float(vt.replace(',', '.')))
+            except ValueError:
+                continue
+        return np.array(freqs), np.array(vals)
+
+    def _update_limit_status(self, res, names, method):
+        """Chamada de dentro de _plot_excitation (kind==0): sobrepoe a
+        curva-limite (se habilitada) e atualiza o rotulo de passa/falha.
+        Recalcula o espectro do ponto/eixo escolhido de forma independente
+        do loop principal de series, para nao precisar generalizar aquele
+        loop (que trata soma/individual/vetor) so' por causa disto.
+        """
+        ax = self.spec_plot.figure.axes[0]
+        if not self.spec_limit_enable.isChecked():
+            self.spec_limit_status.setText('')
+            self.spec_limit_status.setStyleSheet('')
+            return
+        lf, lv = self._limit_curve_data()
+        axis_i = self.spec_axis.currentData()
+        loc_i = self.spec_loc.currentData()
+        self.spec_limit_status.setStyleSheet('')
+        if len(lf) < 2:
+            self.spec_limit_status.setText(
+                'Enter at least two (frequency, limit) rows above.')
+            return
+        if axis_i is None or loc_i is None:
+            self.spec_limit_status.setText(
+                'Pick a single contact point and a single axis above to '
+                'check against the limit curve.')
+            return
+        exc = res.excitations[names[loc_i]]
+        f, y, _, _ = core.analysis_spectrum(
+            exc, method, axis=axis_i,
+            window=self.spec_window.currentText(),
+            nperseg=self.spec_nperseg.currentData(),
+            overlap=self.spec_overlap.currentData(),
+            band_width=self.spec_band.value(),
+            weighting=self.spec_weight.config(),
+            quantity=self.spec_quantity.currentData())
+        _, exceeded, worst_ratio = core.limit_curve_status(f, y, lf, lv)
+        order = np.argsort(lf)
+        ax.plot(lf[order], lv[order], ls='--', lw=1.3, color='#d6336c',
+               label='Limit')
+        ax.legend(fontsize=8)
+        if np.isnan(worst_ratio):
+            self.spec_limit_status.setText(
+                'The limit curve does not overlap the plotted frequency '
+                'range.')
+        elif worst_ratio > 1.0:
+            over = f[exceeded]
+            where = f' near {over[0]:.1f} Hz' if len(over) else ''
+            self.spec_limit_status.setText(
+                f'⚠ Exceeds the limit curve (worst point '
+                f'{worst_ratio:.2f}× the limit{where}).')
+            self.spec_limit_status.setStyleSheet(
+                f'background:#fdeaea; border:1px solid #e0a6a2; '
+                f'border-radius:4px; padding:4px; color:{TEXT};')
+        else:
+            self.spec_limit_status.setText(
+                f'✓ Within the limit curve (worst point '
+                f'{worst_ratio:.2f}× the limit).')
+            self.spec_limit_status.setStyleSheet(
+                f'background:#e8f4ea; border:1px solid #9fc9a8; '
+                f'border-radius:4px; padding:4px; color:{TEXT};')
+
     def update_spectra(self):
         res = self._current(self.spec_exp)
         if res is None:
@@ -1049,16 +1187,18 @@ class MainWindow(QMainWindow):
         self.spec_disc.setEnabled(kind in (3, 4))
         method = self.spec_method.currentText()
         block = method == core.SPECTRUM_METHODS[0]
+        no_welch = method in (core.SPECTRUM_METHODS[0], core.SPECTRUM_METHODS[5])
         for w in (self.spec_window, self.spec_nperseg, self.spec_overlap):
             w.setEnabled(kind in (0, 2, 6))
         self.spec_method.setEnabled(kind == 0)
         self.spec_band.setEnabled(kind == 0)
         self.spec_weight.setEnabled(kind == 0)
         self.spec_quantity.setEnabled(kind in (0, 6, 7))
+        self.spec_limit_box.setEnabled(kind == 0)
         if kind == 0:
-            self.spec_window.setEnabled(not block)
-            self.spec_nperseg.setEnabled(not block)
-            self.spec_overlap.setEnabled(not block)
+            self.spec_window.setEnabled(not no_welch)
+            self.spec_nperseg.setEnabled(not no_welch)
+            self.spec_overlap.setEnabled(not no_welch)
             self.spec_band.setEnabled(method == core.SPECTRUM_METHODS[3])
             self.spec_raw.setEnabled(block)
             self.spec_full.setEnabled(block)
@@ -1091,7 +1231,7 @@ class MainWindow(QMainWindow):
         axis = self.spec_axis.currentData()
         method = self.spec_method.currentText()
         block = method == core.SPECTRUM_METHODS[0]
-        bands = method in core.SPECTRUM_METHODS[3:]
+        bands = method in core.SPECTRUM_METHODS[3:5]
         raw = self.spec_raw.isChecked() and block
         note = ''
 
@@ -1148,6 +1288,7 @@ class MainWindow(QMainWindow):
             ax.set_yscale('log')
         ax.legend(fontsize=8)
         self.spec_note.setText(note)
+        self._update_limit_status(res, names, method)
         self.spec_plot.finish(ax)
 
     def _plot_phase(self, res):

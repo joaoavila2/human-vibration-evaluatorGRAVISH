@@ -582,6 +582,7 @@ SPECTRUM_METHODS = [
     'Welch autospectrum - PSD',
     'Welch autospectrum - RMS per band',
     'One-third octave RMS',
+    'Single block - energy spectral density (ESD)',
 ]
 
 # Frequencias centrais nominais de 1/3 de oitava, ISO 266
@@ -651,6 +652,62 @@ def welch_spectrum(x, dt, window='Hann', nperseg=8192, overlap=0.5, kind='amplit
         y[0] /= 2.0
         y[-1] /= 2.0
     return f, y, len(segs)
+
+
+def energy_spectral_density(x, dt):
+    """Densidade espectral de ENERGIA (ESD), em (unidade)^2 s/Hz.
+
+    Para um sinal transiente de energia finita (um choque/impacto isolado,
+    nao um processo estacionario), densidade espectral de POTENCIA (PSD)
+    nao faz sentido fisico: a "potencia media" dependeria arbitrariamente
+    de quanto silencio ha antes/depois do choque no registro. A ESD
+    normaliza pela ENERGIA total do sinal (teorema de Parseval), que e
+    uma propriedade do proprio pulso, nao do registro que o contem.
+
+    Sem janela, sem segmentacao -- FFT unica do bloco inteiro, mesmo
+    espirito do metodo "Single block" (SPECTRUM_METHODS[0]).
+
+    Identidade de Parseval (verificada por teste): soma(ESD)*df ==
+    dt*soma(x^2) (energia total).
+    """
+    x = np.asarray(x, dtype=float)
+    n = x.shape[0]
+    X = np.fft.rfft(x, axis=0)
+    f = np.fft.rfftfreq(n, dt)
+    esd = 2.0 * dt ** 2 * np.abs(X) ** 2
+    esd[0] /= 2.0
+    if n % 2 == 0:
+        esd[-1] /= 2.0
+    return f, esd
+
+
+def limit_curve_status(f, y, limit_freqs, limit_values):
+    """Interpola uma curva-limite definida pelo usuario (frequencia, valor)
+    nas frequencias de f, e verifica se o espectro y a ultrapassa em algum
+    ponto dentro da faixa coberta pela curva-limite (fora dela, sem base
+    de comparacao, nao faz sentido opinar). Mesmo espirito da "Vector
+    reference curve" de ferramentas comerciais de analise espectral.
+
+    Devolve (limit_interp, exceeded_mask, worst_ratio) -- limit_interp e'
+    NaN fora da faixa coberta; worst_ratio e' o maior y/limit encontrado
+    dentro da faixa (>1 significa que y ultrapassa o limite em algum ponto,
+    NaN se a faixa nao se sobrepoe a f).
+    """
+    f = np.asarray(f, dtype=float)
+    y = np.asarray(y, dtype=float)
+    if len(limit_freqs) < 2:
+        return (np.full_like(f, np.nan), np.zeros_like(f, dtype=bool), np.nan)
+    order = np.argsort(limit_freqs)
+    lf = np.asarray(limit_freqs, dtype=float)[order]
+    lv = np.asarray(limit_values, dtype=float)[order]
+    in_range = (f >= lf[0]) & (f <= lf[-1])
+    limit_interp = np.full_like(f, np.nan)
+    limit_interp[in_range] = np.interp(f[in_range], lf, lv)
+    with np.errstate(invalid='ignore', divide='ignore'):
+        ratio = np.where(in_range, y / limit_interp, np.nan)
+    exceeded = np.where(in_range, y > limit_interp, False)
+    worst_ratio = np.nanmax(ratio) if in_range.any() else np.nan
+    return limit_interp, exceeded, worst_ratio
 
 
 def band_rms(f, psd, edges):
@@ -886,6 +943,25 @@ def analysis_spectrum(exc, method, axis=None, window='Hann', nperseg=8192,
         return (centers, band_rms(f, acc_q, edges), 'Band RMS [{u}]'.format(
                     u=QUANTITY_UNITS[quantity]),
                 tail + f' Integrated into {band_width:g} Hz bands.')
+
+    if method == SPECTRUM_METHODS[5]:
+        acc = None
+        f = None
+        for i, c in enumerate(cols):
+            f, esd = energy_spectral_density(sig[:, i], exc.dt)
+            g = _axis_gain(cfg, c, f)
+            contrib = esd * g ** 2
+            acc = contrib if acc is None else acc + contrib
+        keep = f <= min(LOWPASS_HZ, 0.5 / exc.dt)
+        f, acc = f[keep], acc[keep]
+        y, ylabel = _convert_quantity(f, acc, 'ESD [({u})$^2$s/Hz]',
+                                      quantity, power=True)
+        return (f, y, ylabel,
+                'Energy spectral density of the whole record, no averaging '
+                'or window (single FFT, same chain as "Single block"). '
+                'Meaningful for one finite-duration transient, where power '
+                'spectral density (PSD) would depend arbitrarily on how '
+                'much silence surrounds the shock in the record.' + tag)
 
     # Um terco de oitava: soma as potencias de banda dos eixos escolhidos, nunca
     # os sinais crus (somar ax+ay+az amostra a amostra permitiria cancelamento
