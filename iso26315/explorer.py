@@ -109,7 +109,8 @@ class SignalExplorer(QWidget):
         g.addWidget(QLabel('Plot'), 0, 0)
         self.kind = QComboBox()
         self.kind.addItems(['Time series', 'Spectrum', 'Cumulative RMS',
-                            'Phase spectrum', 'Coherence (vs first checked)'])
+                            'Phase spectrum', 'Coherence (vs first checked)',
+                            'Transmissibility (SEAT: vs first checked)'])
         self.kind.setCurrentIndex(1)
         g.addWidget(self.kind, 0, 1)
         g.addWidget(QLabel('Axis'), 0, 2)
@@ -267,17 +268,20 @@ class SignalExplorer(QWidget):
 
     def refresh(self):
         kind = self.kind.currentIndex()
-        # 0 time series, 1 spectrum, 2 cumulative RMS, 3 phase, 4 coherence.
+        # 0 time series, 1 spectrum, 2 cumulative RMS, 3 phase, 4 coherence,
+        # 5 SEAT transmissibility.
         self.plot.reset_if_changed(kind)
         spectrum_kind = kind == 1
         phase_kind = kind == 3
         coherence_kind = kind == 4
-        block = self.method.currentText() == core.SPECTRUM_METHODS[0]
+        seat_kind = kind == 5
+        no_welch = self.method.currentText() in (
+            core.SPECTRUM_METHODS[0], core.SPECTRUM_METHODS[5])
         self.method.setEnabled(spectrum_kind)
         self.band.setEnabled(
             spectrum_kind and self.method.currentText() == core.SPECTRUM_METHODS[3])
         for w in (self.window, self.nperseg, self.overlap):
-            w.setEnabled((spectrum_kind and not block) or coherence_kind)
+            w.setEnabled((spectrum_kind and not no_welch) or coherence_kind)
 
         names = self._checked()
         ax, = self.plot.axes()
@@ -357,6 +361,54 @@ class SignalExplorer(QWidget):
             self.plot.finish(ax)
             return
 
+        if seat_kind:
+            if len(names) < 2:
+                ax.text(0.5, 0.5, 'Check at least two records: the first '
+                        'checked one is the floor (reference), the others '
+                        'are the seat pan.', ha='center', va='center',
+                        color='#6c757d', wrap=True, transform=ax.transAxes)
+                self.plot.finish(ax)
+                self.note.setText('')
+                return
+            ref_name = names[0]
+            ref_w = self.stats[ref_name]['w']
+            labels, rms_vals, vdv_vals = [], [], []
+            for name in names[1:]:
+                w = self.stats[name]['w']
+                if axis is None:
+                    ref_rms, rms = ref_w['aw_total'], w['aw_total']
+                    ref_vdv, vdv = ref_w['vdv_total'], w['vdv_total']
+                else:
+                    ref_rms, rms = ref_w['aw'][axis], w['aw'][axis]
+                    ref_vdv, vdv = ref_w['vdv'][axis], w['vdv'][axis]
+                labels.append(name)
+                rms_vals.append(rms / ref_rms if ref_rms > 0 else np.nan)
+                vdv_vals.append(vdv / ref_vdv if ref_vdv > 0 else np.nan)
+            x_pos = np.arange(len(labels))
+            width = 0.35
+            ax.bar(x_pos - width / 2, rms_vals, width, label='SEAT (RMS)',
+                  color=SERIES_COLORS[0])
+            ax.bar(x_pos + width / 2, vdv_vals, width, label='SEAT (VDV)',
+                  color=SERIES_COLORS[1])
+            ax.axhline(1.0, ls='--', lw=1, color='#6c757d')
+            ax.set_xticks(x_pos)
+            ax.set_xticklabels(labels)
+            ax.set_ylabel('SEAT (ratio, dimensionless)')
+            axis_tag = f' ({core.AXIS_NAMES[axis]})' if axis is not None else \
+                ' (vector sum)'
+            ax.set_title(f'Seat Effective Amplitude Transmissibility vs '
+                        f'{ref_name}{axis_tag}')
+            self.note.setText(
+                'SEAT = a_w,seat / a_w,floor (or the same ratio using VDV). '
+                'Below 1 (100%): the seat attenuates vibration and improves '
+                'ride comfort. Above 1: the seat amplifies it. The first '
+                'checked record is treated as the floor (reference); use '
+                'RMS when the vibration is smooth/continuous and VDV when '
+                'it has shocks or transients (ISO 2631-1 guidance).')
+            ax.legend(fontsize=8)
+            self.plot.finish(ax)
+            return
+
         for i, name in enumerate(names):
             exc = self.signals[name]
             colour = SERIES_COLORS[i % len(SERIES_COLORS)]
@@ -365,7 +417,7 @@ class SignalExplorer(QWidget):
                      else exc.accel[:, axis])
                 ax.plot(exc.time, y, lw=0.4, color=colour, label=name)
             elif kind == 1:
-                bands = self.method.currentText() in core.SPECTRUM_METHODS[3:]
+                bands = self.method.currentText() in core.SPECTRUM_METHODS[3:5]
                 mode = self.weight.combination()
                 if axis is None and mode in (1, 2):
                     series = [(c, f'{name} ({core.AXIS_NAMES[c]})',

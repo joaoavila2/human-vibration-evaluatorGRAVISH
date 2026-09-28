@@ -32,6 +32,20 @@ EAV_VDV, ELV_VDV = 9.1, 21.0
 # restritiva que a diretiva para o VDV.
 ISO_VDV_LOW, ISO_VDV_HIGH = 8.5, 17.0
 
+# Sistema de Pontos de Exposicao: converte A(8) numa escala adimensional
+# onde o valor de acao da Diretiva (corpo inteiro, EAV_A8=0,5 m/s2)
+# corresponde por definicao a 100 pontos. Serve so' de leitura mais
+# intuitiva para leigos -- nao substitui nem muda a avaliacao normativa em
+# m/s2, que continua sendo o criterio real. PE = A(8)^2 * 100/EAV_A8^2, de
+# modo que o valor limite (ELV_A8=1,15 m/s2) sai em (1,15/0,5)^2*100 ~ 529
+# pontos.
+PE_ACTION_POINTS = 100.0
+
+
+def exposure_points(a8):
+    """Converte A(8) (escalar ou por eixo) em Pontos de Exposicao (PE)."""
+    return (np.asarray(a8, dtype=float) / EAV_A8) ** 2 * PE_ACTION_POINTS
+
 
 @dataclass
 class DirectiveResult:
