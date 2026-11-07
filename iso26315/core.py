@@ -284,7 +284,17 @@ class TransferFunctionStore:
     def __init__(self, data_dir):
         self.dir = Path(data_dir)
         self._cache = {}
-        self.static_forces = np.load(self.dir / 'static_forces.npz')['static']
+        _sf = self.dir / 'static_forces.npz'
+        if not _sf.exists():
+            raise FileNotFoundError(
+                f'Arquivo {_sf} nao encontrado.\n'
+                'Os dados de funcao de transferencia nao sao distribuidos com o codigo-fonte '
+                '(arquivo derivado da ISO 2631-5:2018, sujeito a direitos autorais).\n'
+                'Para gera-los: (1) obtenha o pacote de funcoes de transferencia com a ISO '
+                '2631-5:2018 (Annex E); (2) coloque o ZIP baixado em tools/; '
+                '(3) execute: python tools/build_data.py'
+            )
+        self.static_forces = np.load(_sf)['static']
 
     def available_postures(self):
         return sorted(int(p.stem.replace('posture', ''))

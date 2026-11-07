@@ -2,6 +2,32 @@
 
 ---
 
+## 2026-11-07 — Remoção dos dados de função de transferência (conformidade ISO)
+
+### Decisão
+
+**Decisão do usuário (2026-11-07):** "Código sem dados ISO." Os arquivos `.npz` derivados da ISO 2631-5:2018 (funções de transferência e forças estáticas) foram removidos do controle de versão por serem material protegido por direitos autorais da ISO.
+
+### Arquivos removidos do git
+
+- `data/posture1.npz` … `data/posture5.npz`, `data/posture7.npz` — funções de transferência por postura
+- `data/static_forces.npz` — forças estáticas normalizadas
+
+Os arquivos **permanecem no disco local** e continuam funcionando normalmente. Apenas deixam de ser rastreados pelo git.
+
+### Como regenerar
+
+1. Obtenha o pacote de funções de transferência junto com a norma ISO 2631-5:2018 (Annex E);
+2. Coloque o ZIP baixado em `tools/`;
+3. Execute: `python tools/build_data.py`
+
+### Alterações no código
+
+- `.gitignore`: adicionado `data/*.npz`
+- `core.py` (`TransferFunctionStore.__init__`): mensagem de erro clara quando `static_forces.npz` não existe, com instruções para regenerar
+
+---
+
 ## 2026-11-07 — v3.1.1 — Aviso de encosto "Zero" (Opção B, aprovada pelo usuário)
 
 ### Decisão e justificativa

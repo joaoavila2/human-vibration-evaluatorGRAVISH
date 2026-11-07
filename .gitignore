@@ -2,6 +2,9 @@
 build/
 dist/
 
+# Funcoes de transferencia derivadas da ISO 2631-5 -- regenerar com tools/build_data.py
+data/*.npz
+
 # Python
 __pycache__/
 *.pyc
