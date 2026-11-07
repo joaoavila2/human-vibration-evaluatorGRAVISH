@@ -375,6 +375,8 @@ class ExposureResult:
     # (analysis.Runner) -- a analise de sensibilidade releitura os arquivos
     # a partir daqui em vez de reusar excitations ja processadas.
     paths: tuple = None
+    # Aviso gerado quando o encosto foi marcado 'Zero' (ver CHANGELOG 2026-11-07).
+    backrest_warning: str | None = None
 
 
 def compute_forces(store, excitations, posture, k, bmi_per):
@@ -2876,20 +2878,39 @@ def align_excitations(excitations, tolerance=TIME_BASE_TOLERANCE):
     return out, report
 
 
+BACKREST_ZERO_WARNING = (
+    "Backrest entered as 'Zero': a null signal is used. "
+    "ISO 2631-5:2018 A.3.1 (p. 11) states that an unmeasured backrest "
+    "can be substituted with the seat-surface signal; the official "
+    "executable makes this substitution automatically. "
+    "Results with a null backrest may be lower than the reference "
+    "(e.g. −21 % at T12/L1 in a test case)."
+)
+
+
 def read_exposure_files(paths, progress=None):
     """Le os 4 arquivos de uma exposicao (seat, feet, hands, back, na ordem
     de LOCATION_NAMES) e alinha as bases de tempo. 'Zero'/'Null'/'None'/''
-    geram excitacao nula. Devolve (lista alinhada, relatorio de alinhamento).
+    geram excitacao nula.
+
+    Devolve (lista alinhada, relatorio de alinhamento, lista de avisos).
+    A lista de avisos contem BACKREST_ZERO_WARNING quando o encosto for 'Zero'.
 
     Reune a leitura que analysis.Runner._exposure faz antes de chamar
     analyse_exposure; a analise de sensibilidade a reusa para reler os
     arquivos originais, porque o espectro de uma exposicao ja processada e
     liberado da memoria em historicos longos (Secao 9.3 da documentacao).
     """
+    import warnings as _warnings
     excs, base = [], None
+    _warnings_out = []
     for i, path in enumerate(paths):
         if str(path).strip().lower() in ('zero', 'null', 'none', ''):
             excs.append(None)
+            # Aviso apenas para o encosto (indice 3); maos e pes Zero sao normais.
+            if i == 3:
+                _warnings_out.append(BACKREST_ZERO_WARNING)
+                _warnings.warn(BACKREST_ZERO_WARNING, stacklevel=2)
             continue
         if progress:
             progress(None, f'reading {LOCATION_NAMES[i]}: {Path(path).name}')
@@ -2900,4 +2921,5 @@ def read_exposure_files(paths, progress=None):
         raise ValueError('No acceleration file given: the seat must be measured.')
     excs = [e if e is not None else zero_excitation(base) for e in excs]
     named = {LOCATION_NAMES[i]: e for i, e in enumerate(excs)}
-    return align_excitations(named)
+    aligned, drift = align_excitations(named)
+    return aligned, drift, _warnings_out

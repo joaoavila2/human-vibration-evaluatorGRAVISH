@@ -1289,6 +1289,23 @@ class MainWindow(QMainWindow):
                         if axis_lines else '')
 
         drift_msg = ''
+
+        # Aviso de encosto marcado como 'Zero' (ver CHANGELOG 2026-11-07).
+        back_zero_exposures = [
+            name for name, res in self.assessment.exposures.items()
+            if getattr(res, 'backrest_warning', None)
+        ]
+        if back_zero_exposures:
+            names_str = ', '.join(f'&ldquo;{n}&rdquo;' for n in back_zero_exposures)
+            drift_msg += (
+                f'<br><b style="color:#9a6200">&#9888; Backrest entered as '
+                f'&#39;Zero&#39;</b> in {names_str}: a null signal is used. '
+                f'ISO 2631-5:2018 A.3.1 (p. 11) states that an '
+                f'unmeasured backrest can be substituted with the seat-surface '
+                f'signal; the official executable makes this substitution '
+                f'automatically. Results may be lower than the reference '
+                f'(e.g. −21 % at T12/L1).')
+
         # Inicio de exposicao antes dos 20 anos: a reta da Formula (E.2) e
         # extrapolada (ver references.start_age_warning).
         age_msg = references.start_age_warning(
@@ -2088,7 +2105,7 @@ class MainWindow(QMainWindow):
         def job(report):
             # Rele os arquivos: o espectro de uma exposicao ja processada e
             # liberado da memoria em historicos longos (analysis.py).
-            excs, _ = core.read_exposure_files(res.paths, progress=report)
+            excs, _, _ = core.read_exposure_files(res.paths, progress=report)
             return core.sensitivity_grid(
                 self.store, excs, measurement_time=res.measurement_time,
                 progress=report)
@@ -2398,6 +2415,22 @@ class MainWindow(QMainWindow):
                       color=clr if ci == 3 else TXT, fontsize=7.5, va='center',
                       fontweight='bold' if ci == 3 else 'normal')
                 y -= ROW_H
+
+            # Aviso de encosto Zero no PDF
+            back_zero_pdf = [
+                name for name, res in a.exposures.items()
+                if getattr(res, 'backrest_warning', None)
+            ]
+            if back_zero_pdf:
+                names_pdf = ', '.join(back_zero_pdf)
+                warn_text = (
+                    f"⚠ Backrest 'Zero' in: {names_pdf}. "
+                    "A null signal is used. ISO 2631-5:2018 A.3.1 (p. 11) "
+                    "recommends substituting the seat-surface signal for an "
+                    "unmeasured backrest. Results may be lower than the "
+                    "reference (e.g. −21 % at T12/L1).")
+                T(0.015, y, warn_text,
+                  color='#9a6200', fontsize=7, va='top', wrap=True)
 
             # Rodapé
             hline(FOOTER_Y, lw=0.6)

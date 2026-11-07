@@ -2,6 +2,40 @@
 
 ---
 
+## 2026-11-07 — v3.1.1 — Aviso de encosto "Zero" (Opção B, aprovada pelo usuário)
+
+### Decisão e justificativa
+
+**Decisão:** manter o sinal nulo (`zero_excitation`) para encosto marcado "Zero"; emitir aviso não-bloqueante ao usuário. Aprovada em 2026-11-07.
+
+Justificativa:
+1. **"Zero" tem um único significado na norma:** sinal nulo, 0 m/s² (ISO 2631-5:2018 A.3.1, p. 11). Embora a norma prescrevesse que o *usuário* coloque o sinal do assento no campo do encosto quando não houver medição, ela não determina que o *programa* realize essa substituição automaticamente.
+2. **A substituição pelo assento é ato do usuário, prescrito pelo texto** — o zero tem uso legítimo (assentos sem encosto; análises de sensibilidade) e não deve ser interceptado silenciosamente pelo software.
+3. **O aviso elimina o erro silencioso** apontado pelo VIBRISKS Annex 18 (Hinz et al., 2007, p. 56): o usuário agora é informado da divergência potencial, e pode corrigir a planilha se quiser o comportamento do executável.
+
+A pendência A/B/C registrada em 2026-11-07 está resolvida com a Opção B.
+
+### Mudanças técnicas
+
+**`iso26315/core.py`**
+- Constante `BACKREST_ZERO_WARNING` com texto do aviso (PT/EN).
+- `read_exposure_files` agora retorna uma tripla `(excs, drift, warnings)`. Quando o encosto (índice 3) é "Zero", `warnings` contém a constante acima **e** `warnings.warn()` é emitido para uso como biblioteca ou CLI.
+- `ExposureResult` recebe campo `backrest_warning: str | None = None`.
+
+**`iso26315/analysis.py`**
+- `_LightResult.__slots__` inclui `'backrest_warning'`.
+- `Runner._exposure` propaga o aviso para `res.backrest_warning`.
+
+**`iso26315/gui.py`**
+- `_show_validity()` exibe o aviso com ícone ⚠ em fundo âmbar quando qualquer exposição tiver `backrest_warning` preenchido.
+- `export_pdf()` inclui o aviso na página 1 do PDF quando aplicável.
+- Chamada de `read_exposure_files` no *sensitivity grid* atualizada para desempacotar a tripla.
+
+**`tests/test_backrest_warning.py`** (novo)
+- 6 testes: aviso gerado quando back="Zero"; emissão de `warnings.warn`; resultado numérico inalterado; sem aviso quando encosto tem arquivo real; mãos e pés "Zero" não disparam aviso; exatamente um aviso com seat+três Zeros.
+
+---
+
 ## 2026-11-07 — Correção da justificativa do backrest "Zero" (R13, sem mudança de código)
 
 > Esta entrada corrige a justificativa registrada em 2026-11-06. O comportamento do código (sinal nulo para encosto "Zero") **não foi alterado**. A decisão sobre o que fazer na v3.1.1 está pendente — ver seção "Pendência" abaixo.

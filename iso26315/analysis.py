@@ -17,7 +17,7 @@ MAX_FULL_RESULTS = 4
 class _LightResult:
     """Resumo de uma exposicao, sem as series temporais."""
     __slots__ = ('S', 'S_stat', 'measurement_time', 'posture', 'k', 'bmi_per',
-                 'excitations', 'paths')
+                 'excitations', 'paths', 'backrest_warning')
 
     def __init__(self, res):
         self.S = res.S
@@ -28,6 +28,7 @@ class _LightResult:
         self.bmi_per = res.bmi_per
         self.excitations = {}
         self.paths = res.paths
+        self.backrest_warning = res.backrest_warning
 
 # Valores padrao da analise orientadora (A.3.1)
 ORIENTING = dict(
@@ -76,7 +77,7 @@ class Runner:
 
         paths = exposure.paths()
         try:
-            excs, drift = core.read_exposure_files(
+            excs, drift, back_warnings = core.read_exposure_files(
                 paths, progress=lambda _, m: self.progress(
                     None, f'"{exposure.identifier}" — {m}'))
         except ValueError:
@@ -92,6 +93,7 @@ class Runner:
             measurement_time=exposure.measurement_time or excs[0].duration,
             subclass=subclass)
         res.paths = tuple(paths)
+        res.backrest_warning = back_warnings[0] if back_warnings else None
         # O espectro de deslocamento so serve dentro de compute_forces, e o
         # espectro bruto so serve para a sobreposicao "unprocessed" dos
         # primeiros graficos. Ambos sao os maiores arrays de uma excitacao.
