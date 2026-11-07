@@ -1,4 +1,5 @@
-"""Testes para o aviso de encosto marcado como 'Zero' (Option B, v3.1.1).
+"""Testes para o aviso de encosto marcado como 'Zero' (Option B, v3.1.1) e
+para a aba 'Warnings' na exportacao xlsx.
 
 Verifica:
   1. read_exposure_files retorna aviso quando back = 'Zero'.
@@ -120,3 +121,62 @@ def test_all_zero_except_seat_no_extra_warnings(tmp_files):
     _, _, warns = core.read_exposure_files(
         [p_seat, 'Zero', 'Zero', 'Zero'])
     assert len(warns) == 1
+
+
+# ---------------------------------------------------------------------------
+# Testes da aba Warnings na planilha xlsx
+# ---------------------------------------------------------------------------
+
+def test_xlsx_warnings_sheet_created(tmp_path):
+    """append_warnings_sheet cria a aba Warnings quando ha avisos."""
+    import openpyxl
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from iso26315 import workbook
+
+    xlsx = tmp_path / 'results.xlsx'
+    workbook.write_results(str(xlsx), [['exp1', '', '', 1945, 2000, 2010,
+                                        2, 50, 6, 'orientating',
+                                        0.5, 0.6, 0.7, 0.8, 0.9, 1.0,
+                                        1.0, 'T12-L1', 0.5]])
+    workbook.append_warnings_sheet(str(xlsx), [('exp1', 'Test warning text')])
+
+    wb = openpyxl.load_workbook(str(xlsx))
+    assert 'Warnings' in wb.sheetnames
+    ws = wb['Warnings']
+    rows = list(ws.iter_rows(values_only=True))
+    assert rows[0] == ('Exposure', 'Warning')
+    assert rows[1][0] == 'exp1'
+    assert 'warning' in rows[1][1].lower()
+
+
+def test_xlsx_no_warnings_sheet_when_empty(tmp_path):
+    """append_warnings_sheet nao cria aba quando lista esta vazia."""
+    import openpyxl
+    from iso26315 import workbook
+
+    xlsx = tmp_path / 'results.xlsx'
+    workbook.write_results(str(xlsx), [['exp1', '', '', 1945, 2000, 2010,
+                                        2, 50, 6, 'orientating',
+                                        0.5, 0.6, 0.7, 0.8, 0.9, 1.0,
+                                        1.0, 'T12-L1', 0.5]])
+    workbook.append_warnings_sheet(str(xlsx), [])
+
+    wb = openpyxl.load_workbook(str(xlsx))
+    assert 'Warnings' not in wb.sheetnames
+
+
+def test_xlsx_warnings_sheet_replaced_on_rerun(tmp_path):
+    """append_warnings_sheet substitui a aba se ela ja existir."""
+    import openpyxl
+    from iso26315 import workbook
+
+    xlsx = tmp_path / 'results.xlsx'
+    workbook.write_results(str(xlsx), [])
+    workbook.append_warnings_sheet(str(xlsx), [('e1', 'old warning')])
+    workbook.append_warnings_sheet(str(xlsx), [('e1', 'new warning')])
+
+    wb = openpyxl.load_workbook(str(xlsx))
+    ws = wb['Warnings']
+    rows = list(ws.iter_rows(values_only=True))
+    assert rows[1][1] == 'new warning'
+    assert len(rows) == 2  # header + 1 data row

@@ -31,8 +31,14 @@ A pendência A/B/C registrada em 2026-11-07 está resolvida com a Opção B.
 - `export_pdf()` inclui o aviso na página 1 do PDF quando aplicável.
 - Chamada de `read_exposure_files` no *sensitivity grid* atualizada para desempacotar a tripla.
 
+**`iso26315/workbook.py`**
+- Nova função `append_warnings_sheet(path, warning_rows)`: acrescenta (ou substitui) a aba **'Warnings'** num xlsx existente quando há avisos de encosto Zero. Recebe lista de `(exposure_name, warning_text)`.
+
+**`iso26315/gui.py` — `export()`**
+- Após gravar a aba 'Risk factors', chama `append_warnings_sheet` com os avisos coletados das exposições; aba 'Warnings' aparece no xlsx apenas quando necessário.
+
 **`tests/test_backrest_warning.py`** (novo)
-- 6 testes: aviso gerado quando back="Zero"; emissão de `warnings.warn`; resultado numérico inalterado; sem aviso quando encosto tem arquivo real; mãos e pés "Zero" não disparam aviso; exatamente um aviso com seat+três Zeros.
+- 9 testes: aviso gerado quando back="Zero"; emissão de `warnings.warn`; resultado numérico inalterado; sem aviso quando encosto tem arquivo real; mãos e pés "Zero" não disparam aviso; exatamente um aviso com seat+três Zeros; aba Warnings criada/substituída/omitida no xlsx.
 
 ---
 

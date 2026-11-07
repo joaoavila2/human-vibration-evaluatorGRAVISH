@@ -191,6 +191,25 @@ def write_results(path, rows, header=None):
     return path
 
 
+def append_warnings_sheet(path, warning_rows):
+    """Acrescenta (ou substitui) a aba 'Warnings' num xlsx existente.
+
+    warning_rows: lista de (exposure_name, warning_text).
+    Se a lista estiver vazia, nao faz nada.
+    """
+    if not warning_rows:
+        return
+    import openpyxl
+    wb = openpyxl.load_workbook(path)
+    if 'Warnings' in wb.sheetnames:
+        del wb['Warnings']
+    ws = wb.create_sheet('Warnings')
+    ws.append(['Exposure', 'Warning'])
+    for exp_name, warn_text in warning_rows:
+        ws.append([exp_name, warn_text])
+    wb.save(path)
+
+
 def write_history(path, exposures, patterns, years):
     """Grava um historico de exposicao no formato lido por read_history().
 

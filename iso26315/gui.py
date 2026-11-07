@@ -2232,6 +2232,12 @@ class MainWindow(QMainWindow):
         ]
         try:
             workbook.write_results(path, [row])
+            back_zero_rows = [
+                (name, res.backrest_warning)
+                for name, res in a.exposures.items()
+                if getattr(res, 'backrest_warning', None)
+            ]
+            workbook.append_warnings_sheet(path, back_zero_rows)
         except Exception as exc:
             QMessageBox.critical(self, 'Export failed', str(exc))
             return
