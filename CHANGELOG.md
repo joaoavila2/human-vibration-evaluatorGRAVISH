@@ -2,6 +2,44 @@
 
 ---
 
+## 2026-11-07 — Correção da justificativa do backrest "Zero" (R13, sem mudança de código)
+
+> Esta entrada corrige a justificativa registrada em 2026-11-06. O comportamento do código (sinal nulo para encosto "Zero") **não foi alterado**. A decisão sobre o que fazer na v3.1.1 está pendente — ver seção "Pendência" abaixo.
+
+### Erros e imprecisões na justificativa anterior
+
+**Item 3 original** ("Não há instrução normativa explícita na ISO 2631-5:2018 determinando copiar o sinal do assento") — **INCORRETO**.
+
+A ISO 2631-5:2018, Seção A.3.1 (p. 11), diz que, quando não há medição do encosto, ela *"can be substituted with the measurements at the seat surface"*. Diz ainda que, havendo apenas dados do assento, *"this is used for the seat and backrest"*; o marcador "Zero" aplica-se apenas aos outros pontos (mãos e pés). Em outras palavras, a norma instrui o **usuário** a colocar o sinal do assento no campo do encosto quando o encosto não foi medido. O que a norma não especifica é que o *programa* realize essa substituição automaticamente ao encontrar "Zero" naquele campo.
+
+**Descrição do executável** ("artefato do código MATLAB, possivelmente legado da ISO/DIS") — **IMPRECISA**.
+
+A substituição `Anra{4} = Anra{1}` é uma regra **deliberada** do grupo de desenvolvimento do método. O VIBRISKS Annex 18 (Hinz et al., 2007, pp. 53 e 56) explicita: *"the user shall never set the inputs of the backrest or seat surface to zero"*, porque as respostas parciais do assento e do encosto se cancelam parcialmente — anular um deles distorce o resultado. Fleury et al. (2015, p. 99) confirma o mesmo comportamento no executável DIN-2012.
+
+**Itens 1 e 2 originais** ("fisicamente correto"; "consistente com mãos/pés") — **enfraquecidos**.
+
+- "Zero" na planilha ISO significa *"não medido"*, não *"veículo sem encosto"*. Um encosto presente mas não medido produz aceleração; um sinal nulo não representa esse estado.
+- A norma trata o encosto de forma diferente de mãos e pés: para o encosto sem medição, ela prevê substituição pelo sinal do assento; para mãos e pés, prevê zero. Os dois casos não são análogos.
+
+### Consequência prática
+
+- Quem segue o texto normativo — isto é, coloca o arquivo do assento no campo do encosto antes de processar — obtém o **mesmo resultado** na v3.1.0 e no executável oficial.
+- A divergência observada em R13 (T12/L1: v3.1 = 0,748 × executável = 0,946) surge **somente** quando o encosto é marcado "Zero" diretamente, uma entrada que o texto da norma não prevê para o encosto.
+
+### Pendência — decisão do usuário para v3.1.1
+
+O comportamento atual (sinal nulo para encosto "Zero") pode ser tratado de três formas na próxima versão:
+
+| Opção | Comportamento | Conformidade |
+|-------|--------------|--------------|
+| A | Substituir automaticamente `Zero` do encosto pelo sinal do assento (como o executável) | Alinhada com VIBRISKS/executável |
+| B | Manter zero, mas emitir aviso ao usuário quando encosto = "Zero" | Transparente; usuário decide |
+| C | Recusar "Zero" no campo do encosto e exigir um arquivo ou marcação explícita | Mais restritiva |
+
+**Decisão pendente com o usuário.** Nenhuma mudança de código nesta entrada.
+
+---
+
 ## 2026-11-06 — Release v3.1.0 (sessão 14 — freeze)
 
 ### Congelamento da versão 3.1.0
