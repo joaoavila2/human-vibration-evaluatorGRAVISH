@@ -70,8 +70,7 @@ class _ImportPanelBase(QWidget):
 
 class CsvImportPanel(_ImportPanelBase):
     """CSV continuo (Time_ms,AX,AY,AZ em g) -- sketches de bancada como o
-    teste de 10Hz do Xiao, diferente do .m do registrador de campo (que
-    vem em blocos de 5 s com lacuna).
+    teste de 10Hz do Xiao. Continuo, como todas as medicoes atuais.
     """
 
     def _build(self):
@@ -79,9 +78,9 @@ class CsvImportPanel(_ImportPanelBase):
 
         note = QLabel(
             'For continuous CSV loggers (columns Time_ms,AX,AY,AZ, already '
-            'in g) -- e.g. bench-test firmware, not the .m field register. '
-            'This data has no 5 s gap, so it is sliced into contiguous '
-            'blocks and the duty cycle comes out at ~100%. The sample rate '
+            'in g) -- e.g. bench-test firmware. The record is continuous '
+            'and is assessed as one signal. The Directive tab "Load day" '
+            'button also reads this format. The sample rate '
             'is NOT read from the file (the millisecond timestamp is only '
             'approximate, subject to loop jitter) -- enter below whatever '
             'the firmware was actually configured for.')
@@ -146,9 +145,9 @@ class TxtImportPanel(_ImportPanelBase):
 
         note = QLabel(
             'For the four-column ASCII record used by Annex A/E and read '
-            'by the "ASCII records" sub-tab (time, ax, ay, az in m/s2). No '
-            '5 s gap, so it is sliced into contiguous blocks (duty cycle '
-            '~100%). The sample rate is read from the file\'s own uniform '
+            'by the "ASCII records" sub-tab (time, ax, ay, az in m/s2). The '
+            'record is continuous and is assessed as one signal. The sample '
+            'rate is read from the file\'s own uniform '
             'time base -- nothing to enter here. All selected files must '
             'come from the same recording session (same sample rate).')
         note.setWordWrap(True)

@@ -81,9 +81,10 @@ def assess(blocks, dt, exposure_hours, mode='highest', weights=None, k=None):
     """Avaliacao pela diretiva.
 
     exposure_hours e o tempo de exposicao usado em A(8) = k a_w sqrt(t/8h) e no
-    fator (t_exp/t_meas)^(1/4) do VDV. Para registros com ciclo de trabalho,
-    o correto e o periodo coberto: a vibracao nao para nos intervalos em que o
-    cartao nao grava.
+    fator (t_exp/t_meas)^(1/4) do VDV. Nas medicoes continuas atuais e o
+    tempo medido (ou o informado para extrapolar). No formato .m antigo,
+    com ciclo de trabalho de 40%, o correto e o periodo coberto: a vibracao
+    nao para nos intervalos em que o cartao nao grava.
 
     weights/k sao None por padrao, ou seja Wd/Wd/Wk e FACTORES (1,4/1,4/1,0)
     -- a definicao de A(8) da propria diretiva, valida so no assento. Um

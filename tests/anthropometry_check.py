@@ -1,5 +1,5 @@
-"""Validacao da tabela de percentis de massa por classe de IMC (core.py,
-MASS_PERCENTILES_BY_BMI_CLASS) contra os seis casos indiv1-indiv6 do pacote
+"""Validacao das bordas de classe de massa (core.py, MASS_EDGES_BY_BMI_CLASS)
+contra os seis casos indiv1-indiv6 do pacote
 de exemplos da ISO 2631-5, usando o R^A oficial publicado em Results_ISO.xls.
 
 Motivacao: uma versao anterior de core.anthropometry() so tinha indiv5 e

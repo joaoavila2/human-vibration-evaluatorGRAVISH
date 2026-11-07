@@ -4,13 +4,20 @@ Este modulo e deliberadamente independente de core.py. As duas cadeias nao
 compartilham condicionamento de sinal, porque os requisitos conflitam:
 
                         Clausula 5 / Anexo C      Anexo A / Anexo E
-  passa-alta            0,1 Hz, 2 polos           0,5 Hz
+  passa-alta            0,01 Hz, 2 polos          0,5 Hz
   passa-baixa           80 Hz, 4 polos            100 Hz
   filtros da 2631-1     proibidos                 usados so na validacao
   direcoes              so z, no assento          x, y, z em 4 pontos
   excitacao             aceleracao                deslocamento
 
-O corte inferior em 0,1 Hz existe para preservar a queda livre antes do
+Valores do sexto passo de 5.1.3 ("band-limited at 0,01 Hz and 80 Hz using
+second order Butterworth high pass filter with cut-off frequencies of
+0,01 Hz and a fourth order Butterworth low pass filter with a cut-off
+frequency of 80 Hz"). Uma versao anterior usava 0,1 Hz, valor que nao esta
+na norma; a frase do sexto passo falta na copia do laboratorio (pagina 5
+termina no quinto passo), e foi conferida no texto completo.
+
+O corte inferior em 0,01 Hz existe para preservar a queda livre antes do
 impacto: filtrar em 0,5 Hz empurraria o -1 g de volta a zero antes do choque
 e erraria o pico em ate 1 g.
 """
@@ -25,11 +32,31 @@ POLES = [(31.0, 0.21), (230.0, 0.88), (260.0, 0.80),
          (320.0, 0.40), (380.0, 0.75), (420.0, 0.65)]
 
 DOSE_FACTOR = 1.07                      # Formula (3), resposta de amplitude
-HIGHPASS_HZ, HIGHPASS_ORDER = 0.1, 2    # 5.1.3
+HIGHPASS_HZ, HIGHPASS_ORDER = 0.01, 2   # 5.1.3, sexto passo
 LOWPASS_HZ, LOWPASS_ORDER = 80.0, 4
 REFERENCE_DAILY_TIME = 8 * 3600.0       # td recomendado na Formula (4)
 
-# Anexo C
+# Anexo C da ISO 2631-5:2018, conferido contra o texto da norma: Formula (C.2)
+# para m_z (49% de 82 kg sobre 14 cm2 no homem; 45% de 64 kg sobre 11,6 cm2 na
+# mulher, Nota 1), Formula (C.3) para R com i de 0 a n-1, Formula (C.4)
+# S_u,i = 6,75 MPa - S_age (b+i) com S_age = 0,052 MPa no homem e 0,039 MPa na
+# mulher (Nota 3), e Formula (C.5) com o Weibull da Tabela C.1. A norma adota
+# o modelo de Schmidt, Paskoff, Shender & Bass, "Risk of Lumbar Spine Injury
+# From Cyclic Compressive Loading", Spine 37(26):E1614-E1621 (2012), derivado
+# de 107 ensaios de fadiga cadaverica com carga ciclica.
+#
+# Uma versao anterior deste comentario dizia que o Anexo C "nao era a formula
+# da norma" e confundia (C.4) com a (E.2) do Anexo E (6,765024 - 0,067184
+# idade); as duas existem e a propria norma diz que nao sao identicas (Nota 4).
+# A unica diferenca para o artigo e o S_age feminino: a Tabela 4 de Schmidt
+# et al. traz 0,0378, a norma traz 0,039. Usa-se o valor da norma.
+#
+# endplate_area (cm^2) e' MEDIA POPULACIONAL por sexo, nao previsao
+# individual: Seidel et al. ("The size of lumbar vertebral endplate areas",
+# Int J Ind Ergon 2008, 53 doadores) mostram que area de endplate nao e'
+# previsivel a partir de massa corporal, altura ou qualquer medida
+# antropometrica testada (r_max=0,448, <= 20 % da variancia explicada,
+# maioria nao-significativo) -- variacao individual de +-2 cm^2 sem relacao com peso.
 SEX_DEFAULTS = {
     'male': dict(mass_fraction=0.49, endplate_area=14.0, s_age=0.052,
                  alpha=1.613, beta=2.799, ref_mass=82.0),
@@ -60,7 +87,7 @@ def condition(az, dt, taper_seconds=0.0, remove_offset=True):
     """Condicionamento de sinal de 5.1.3, nesta ordem.
 
     Correcao de offset, janela de cosseno opcional nas pontas, passa-alta
-    Butterworth de 2 polos em 0,1 Hz e passa-baixa de 4 polos em 80 Hz.
+    Butterworth de 2 polos em 0,01 Hz e passa-baixa de 4 polos em 80 Hz.
     Os filtros sao causais, como na implementacao digital do Anexo D.
     """
     x = np.asarray(az, dtype=float).copy()
@@ -164,7 +191,8 @@ def mz_value(body_mass, mass_fraction, endplate_area_cm2, added_mass=0.0):
 
 
 def ultimate_strength(age, s_age):
-    """Formula (C.4). Derivada de espécimes de 19 a 93 anos."""
+    """Formula (C.4): resistencia ultima S_u,i = 6,75 MPa - S_age (b+i).
+    Derivada de especimes de 19 a 93 anos (ver nota em SEX_DEFAULTS)."""
     return ULTIMATE_BASE - s_age * np.asarray(age, dtype=float)
 
 
@@ -181,13 +209,13 @@ def stress_variable(daily_doses, days_per_year, start_age, mz, s_age):
     if np.any(denom <= 0):
         raise ValueError(
             'The ultimate strength minus the static stress is not positive for '
-            'every year: the exposure extends past the age where Formula (C.4) '
-            'still yields a usable strength, or m_z is too large.')
+            'every year: the exposure extends past the age where the ultimate '
+            'strength model still yields a usable strength, or m_z is too large.')
     return float(np.sum((sd * days ** (1 / 6) / denom) ** 6) ** (1 / 6))
 
 
 def injury_probability(R, alpha, beta):
-    """Formula (C.5): modelo de Weibull, probabilidade entre 0 e 1."""
+    """Formula (C.5): Weibull da Tabela C.1, probabilidade entre 0 e 1."""
     return float(1 - np.exp(-((R / alpha) ** beta)))
 
 
@@ -273,19 +301,26 @@ def assess_from_segments(segments, dt, measured_time, body_mass, sex='male',
                          daily_time=REFERENCE_DAILY_TIME, days_per_year=240,
                          start_age=20, n_years=45, mass_fraction=None,
                          endplate_area=None, added_mass=0.0,
-                         exclude_loss_of_contact=True, taper_seconds=0.0):
+                         exclude_loss_of_contact=True, taper_seconds=0.0,
+                         spine_response_fn=None):
     """Cadeia completa da Clausula 5 mais Anexo C sobre varios segmentos
     independentes de az (m/s2), cada um com seu proprio tempo continuo.
 
     Cada segmento e condicionado e tem a perda de contato detectada por
-    conta propria -- nada e colado entre segmentos. `measured_time` e o
-    tempo total de fato medido (a soma da duracao de cada segmento), que
-    pode ser menor que o intervalo de relogio coberto por eles (por exemplo,
-    blocos de 2 s de um registrador de campo que grava a cada 5 s: o tempo
-    medido conta so os 2 s de cada bloco, nao os 3 s de gravacao no cartao).
-    Um unico registro continuo e so o caso de um segmento so -- e o que
-    `assess()` faz.
+    conta propria -- nada e colado entre segmentos. Nas medicoes atuais,
+    continuas, cada arquivo e um segmento. `measured_time` e o tempo total
+    de fato medido (a soma da duracao de cada segmento); so no formato .m
+    antigo (blocos de 2 s a cada 5 s) ele e menor que o periodo de relogio
+    coberto. Um unico registro continuo e so o caso de um segmento so -- e
+    o que `assess()` faz.
+
+    spine_response_fn(cond, dt) substitui spine_response (Formula 1) por
+    outra funcao de transferencia assento-coluna -- unico gancho usado pelo
+    prototipo experimental de postura de cadeira de rodas
+    (annexc_wheelchair.py, v2.9). None (padrao) preserva a Formula (1) da
+    norma, sem nenhuma mudanca de comportamento.
     """
+    response_of = spine_response_fn or spine_response
     cfg = SEX_DEFAULTS[sex]
     frac = cfg['mass_fraction'] if mass_fraction is None else mass_fraction
     area = cfg['endplate_area'] if endplate_area is None else endplate_area
@@ -302,7 +337,7 @@ def assess_from_segments(segments, dt, measured_time, body_mass, sex='male',
             if len(seg) < 16:
                 continue
             cond = condition(seg, dt, taper_seconds)
-            resp = spine_response(cond, dt)
+            resp = response_of(cond, dt)
             peaks_all.append(positive_peaks(resp))
             response_full.append(resp)
             cond_full.append(cond)
@@ -327,7 +362,8 @@ def assess_from_segments(segments, dt, measured_time, body_mass, sex='male',
 def assess(az, dt, body_mass, sex='male', daily_time=REFERENCE_DAILY_TIME,
            measured_time=None, days_per_year=240, start_age=20, n_years=45,
            mass_fraction=None, endplate_area=None, added_mass=0.0,
-           exclude_loss_of_contact=True, taper_seconds=0.0):
+           exclude_loss_of_contact=True, taper_seconds=0.0,
+           spine_response_fn=None):
     """Cadeia completa da Clausula 5 mais Anexo C, para um unico registro
     continuo em z. Casca fina sobre assess_from_segments com um segmento so.
     """
@@ -338,4 +374,4 @@ def assess(az, dt, body_mass, sex='male', daily_time=REFERENCE_DAILY_TIME,
         days_per_year=days_per_year, start_age=start_age, n_years=n_years,
         mass_fraction=mass_fraction, endplate_area=endplate_area,
         added_mass=added_mass, exclude_loss_of_contact=exclude_loss_of_contact,
-        taper_seconds=taper_seconds)
+        taper_seconds=taper_seconds, spine_response_fn=spine_response_fn)

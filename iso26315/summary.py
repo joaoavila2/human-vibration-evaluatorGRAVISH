@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from . import directive, labmethod, nho09, positions as ps
+from . import core, directive, labmethod, nho09, positions as ps
 
 
 @dataclass
@@ -19,6 +19,7 @@ class Criterion:
     limit: float
     normative: bool      # se o criterio se aplica a esta posicao
     note: str = ''
+    kind: str = 'exposure'   # 'ratio': regra de escolha de metodo, sem faixas
 
 
 def all_criteria(day, position, hours, lab_cfg, custom=None):
@@ -51,13 +52,19 @@ def normative_criteria(day, position, hours, custom=None):
     out = []
 
     r = nho09.assess(blocks, dt, hours)
-    out += [Criterion('NHO-09', 'aren', r.aren, 0.5, 1.1, seat),
-            Criterion('NHO-09', 'VDVR', r.vdvr, 9.1, 21.0, seat)]
+    out += [Criterion('NHO-09', 'aren', r.aren_rounded, nho09.ACTION_AREN,
+                      nho09.LIMIT_AREN, seat,
+                      f'{r.aren:.3f} rounded to 0.1 (6.4.1); uncertainty '
+                      f'region 0.9-1.1'),
+            Criterion('NHO-09', 'VDVR', r.vdvr, nho09.ACTION_VDVR,
+                      nho09.LIMIT_VDVR, seat, 'uncertainty region 16.4-21')]
 
     mtvv_val = nho09.mtvv(blocks, dt)
     out.append(Criterion('MTVV', 'a_running,max', mtvv_val, np.nan, np.nan,
                          False, 'informative, running RMS (1 s) peak, ISO '
                          '2631-1 6.4.2 -- no fixed action/limit pair'))
+
+    out += ratio_criteria(blocks, dt, seat)
 
     msdv_val = nho09.msdv(blocks, dt, hours)
     out.append(Criterion('MSDV', 'a_wf,z', msdv_val, np.nan, np.nan, False,
@@ -100,6 +107,31 @@ def normative_criteria(day, position, hours, custom=None):
         blocks, dt, hours, 'highest', weights=dw, k=dk)
 
     return out, d_display
+
+
+AXES = ('x', 'y', 'z')
+
+
+def ratio_criteria(blocks, dt, normative):
+    """Razoes de decisao da ISO 2631-1 (6.3.3) no eixo em que sao maiores.
+    Acima do limite o valor eficaz subestima a exposicao e o MTVV ou o VDV
+    tem de ser reportados junto. Nao tem nivel de acao: e' um sim ou nao."""
+    r = nho09.axis_ratios(blocks, dt)
+    out = []
+    for key, metric, limit in (('mtvv_ratio', 'MTVV/a_w', core.MTVV_RATIO_LIMIT),
+                               ('vdv_ratio', 'VDV/(a_w T^1/4)',
+                                core.VDV_RATIO_LIMIT)):
+        vals = r[key]
+        if not np.isfinite(vals).any():
+            continue
+        i = int(np.nanargmax(vals))
+        each = ', '.join(f'{a} {v:.2f}' for a, v in zip(AXES, vals))
+        out.append(Criterion(
+            'ISO 2631-1 6.3.3', f'{metric} ({AXES[i]})', float(vals[i]),
+            np.nan, limit, normative,
+            f'{each}; above {limit} the RMS underestimates the exposure and '
+            f'MTVV / VDV must be reported with it', kind='ratio'))
+    return out
 
 
 def lab_criteria(day, lab_cfg):

@@ -14,8 +14,8 @@ Dois efeitos, isolados separadamente:
      invisiveis. Isso e uma limitacao estatistica do instrumento, nao um
      defeito de calculo -- e a mesma limitacao que a NHO-09 ja aceita hoje
      para estes dados.
-  2. Transiente de filtro: o passa-alta de 0,1 Hz da Clausula 5 (Butterworth,
-     2 polos) tem periodo de 10 s -- cinco vezes o bloco de 2 s. Processar
+  2. Transiente de filtro: o passa-alta de 0,01 Hz da Clausula 5 (Butterworth,
+     2 polos) tem periodo de 100 s -- cinquenta vezes o bloco de 2 s. Processar
      cada bloco isoladamente reinicia o filtro do zero a cada 2 s, o que pode
      distorcer o sinal condicionado bem alem do que a amostragem sozinha
      explicaria. Isso E um defeito de metodo, mitigavel (blocos maiores,
@@ -119,7 +119,7 @@ def dose_blocked(x, dt, block_s, cycle_s):
 
 
 def highpass_settling(dt, block_s):
-    """Resposta ao degrau do passa-alta de 0,1 Hz: quanto do bloco e transiente?"""
+    """Resposta ao degrau do passa-alta de 0,01 Hz: quanto do bloco e transiente?"""
     n = int(round(block_s / dt))
     step = np.ones(n)
     from scipy.signal import butter, sosfilt
@@ -133,7 +133,7 @@ def highpass_settling(dt, block_s):
 
 def main():
     print('=' * 78)
-    print('0. Acomodacao do passa-alta de 0,1 Hz dentro de um bloco')
+    print('0. Acomodacao do passa-alta de 0,01 Hz dentro de um bloco')
     print('=' * 78)
     for b in (2.0, 5.0, 10.0, 20.0, 30.0):
         t_settle = highpass_settling(DT, max(b, 30.0))
@@ -166,7 +166,7 @@ def main():
     print('60% nao gravados) -- esperado, estatistico, nao corrigivel.')
     print('blocos/colado isola o efeito do filtro reiniciado a cada bloco,')
     print('sobre as MESMAS amostras -- este e o que decide se blocos de 2 s')
-    print('sao longos o bastante para o passa-alta de 0,1 Hz.')
+    print('sao longos o bastante para o passa-alta de 0,01 Hz.')
     print()
 
     print('=' * 78)

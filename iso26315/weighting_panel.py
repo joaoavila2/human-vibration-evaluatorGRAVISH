@@ -2,7 +2,7 @@
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QComboBox, QDoubleSpinBox, QGridLayout, QGroupBox, QHBoxLayout, QLabel,
-    QWidget)
+    QVBoxLayout, QWidget)
 
 from . import core
 from .theme import BAD_COLOR, TEXT_MUTED
@@ -23,26 +23,42 @@ class WeightingPanel(QGroupBox):
     def __init__(self, title='Frequency weighting (display only)'):
         super().__init__(title)
         self._loading = False
-        g = QGridLayout(self)
-        g.setContentsMargins(8, 4, 8, 4)
-        g.setVerticalSpacing(3)
 
-        g.addWidget(QLabel('Preset'), 0, 0)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(8, 18, 8, 4)
+        outer.setSpacing(4)
+
+        # Preset row — own HBoxLayout so the combo can expand freely
+        preset_row = QHBoxLayout()
+        preset_row.setSpacing(6)
+        preset_row.addWidget(QLabel('Preset'))
         self.preset = QComboBox()
         for name in core.WEIGHTING_PRESETS:
             self.preset.addItem(name)
         self.preset.addItem('Custom')
-        g.addWidget(self.preset, 0, 1, 1, 3)
+        preset_row.addWidget(self.preset, 1)
+        outer.addLayout(preset_row)
+
+        # Grid for per-axis controls
+        g = QGridLayout()
+        g.setContentsMargins(0, 0, 0, 0)
+        g.setVerticalSpacing(3)
+        outer.addLayout(g)
 
         self.filters, self.gains = {}, {}
         for col, ax in enumerate(core.AXIS_NAMES):
-            g.addWidget(QLabel(f'Axis {ax}'), 1, col)
+            g.addWidget(QLabel(f'Axis {ax}'), 0, col)
             box = QComboBox()
             box.addItem('None', None)
             for nm, cfg in core.WEIGHTINGS.items():
                 box.addItem(nm, nm)
+            box.setMinimumWidth(90)
+            box.setSizePolicy(box.sizePolicy().horizontalPolicy(),
+                              box.sizePolicy().verticalPolicy())
+            from PySide6.QtWidgets import QSizePolicy as _QSP
+            box.setSizePolicy(_QSP.Policy.Expanding, _QSP.Policy.Fixed)
             box.currentIndexChanged.connect(self._on_filter)
-            g.addWidget(box, 2, col)
+            g.addWidget(box, 1, col)
             klay = QHBoxLayout()
             klay.setContentsMargins(0, 0, 0, 0)
             tag = QLabel('k =')
@@ -53,28 +69,33 @@ class WeightingPanel(QGroupBox):
             spin.setRange(0.0, 20.0)
             spin.setSingleStep(0.1)
             spin.setValue(1.0)
-            spin.setMaximumWidth(80)
+            spin.setMinimumWidth(70)
+            spin.setMaximumWidth(90)
             spin.valueChanged.connect(self._on_filter)
             klay.addWidget(spin)
             klay.addStretch()
             holder = QWidget()
             holder.setLayout(klay)
-            g.addWidget(holder, 3, col)
+            g.addWidget(holder, 2, col)
             self.filters[ax] = box
             self.gains[ax] = spin
 
-        g.addWidget(QLabel('Axis combination'), 1, 3)
+        g.addWidget(QLabel('Axis combination'), 0, 3)
         self.combine = QComboBox()
+        self.combine.setMinimumWidth(200)
+        from PySide6.QtWidgets import QSizePolicy as _QSP
+        self.combine.setSizePolicy(_QSP.Policy.Expanding, _QSP.Policy.Fixed)
         self.combine.addItems(self.COMBINE)
         self.combine.setCurrentIndex(self.VECTOR)
         self.combine.currentIndexChanged.connect(lambda *_: self.changed.emit())
-        g.addWidget(self.combine, 2, 3)
+        g.addWidget(self.combine, 1, 3)
 
         self.status = QLabel('')
         self.status.setWordWrap(True)
-        g.addWidget(self.status, 4, 0, 1, 4)
-        for c in range(4):
+        g.addWidget(self.status, 3, 0, 1, 4)
+        for c in range(3):
             g.setColumnStretch(c, 1)
+        g.setColumnStretch(3, 2)
 
         self.preset.currentIndexChanged.connect(self._on_preset)
         self.preset.setCurrentText(core.DEFAULT_PRESET)

@@ -8,10 +8,11 @@ exportação para planilha. Nasceu como reimplementação em Python do software 
 avaliação de risco dos Anexos A e E da ISO 2631-5, e cresceu para cobrir também
 a Cláusula 5/Anexo C da mesma norma (exposições com perda de contato), as
 ponderações e critérios de conforto da ISO 2631-1, a NHO-09 e a Diretiva
-2002/44/CE, um explorador de sinais de propósito geral e um leitor de registros
-de campo (`.m`) com comparação contra o método do laboratório — a ISO 2631-5
-propriamente dita é hoje um dos vários caminhos de avaliação disponíveis, não o
-escopo inteiro do programa.
+2002/44/CE, um explorador de sinais unificado (aba *Signal records*) que aceita
+qualquer formato de arquivo e oferece análise completa ISO 2631-1, e a aba
+*Directive* para avaliação por dia de trabalho com comparação contra o método do
+laboratório — a ISO 2631-5 propriamente dita é hoje um dos vários caminhos de
+avaliação disponíveis, não o escopo inteiro do programa.
 
 ## ISO 2631-5, Anexos A e E
 
@@ -223,9 +224,9 @@ relativo mediano de 0,05% no Wk e 0,04% no Wd.
 Um ponto merece nota. No Wd a 10 Hz a divergência sobe para 4,9%, mas a causa
 não é a implementação: a coluna de fatores da tabela traz 212, enquanto a coluna
 em dB ao lado traz −13,91 dB, que corresponde a 201,6. Os dois valores da própria
-tabela são inconsistentes entre si, e o cálculo bate com a coluna em dB. Muito
-provavelmente é erro do OCR usado para extrair a norma; vale conferir no PDF
-original.
+tabela são inconsistentes entre si, e o cálculo bate com a coluna em dB. Trata-se
+de errata oficial: ISO 2631-1:1997/Amd.1:2010, p. 3, substitui "212" por "202"
+na Tabela B.2, coluna Wd a 10 Hz.
 
 ### Controle por eixo
 
@@ -285,60 +286,88 @@ si, então o software verifica antes de calcular:
 
 A tolerância está em `core.TIME_BASE_TOLERANCE`.
 
-## Explorador de sinais
+## Signal records (explorador de sinais unificado)
 
-A aba **Signal explorer** analisa arquivos de aceleração diretamente, sem
+A aba **Signal records** analisa arquivos de aceleração diretamente, sem
 planilha nenhuma. Está fora do escopo da norma: não calcula dose nem fator de
 risco, e existe para triagem de sinais antes de montar um histórico de exposição.
 
+Aceita todos os formatos de aquisição: ASCII de quatro colunas (`.txt`, `.asc`,
+`.dat`, `.csv`), os formatos de campo actuais (DateTime CSV, VIB1 `.dat`) e o
+formato legado `.m` de blocos. Um único ponto de entrada substitui as antigas abas
+separadas *ASCII records* e *Field records*.
+
 Carrega vários arquivos de uma vez e desenha todos sobrepostos, com caixas para
-ligar e desligar cada um. Cinco visualizações: série temporal, espectro (com os
-cinco métodos e todas as janelas), RMS acumulado — útil para verificar
-estacionariedade, já que um registro estacionário produz uma curva que achata
-rapidamente —, **fase** e **coerência**.
+ligar e desligar cada um. Dezasseis visualizações: série temporal, espectro (com
+os cinco métodos e todas as janelas), RMS acumulado — útil para verificar
+estacionariedade —, fase, coerência, transmissibilidade SEAT, transmissibilidade
+H1, espectrograma, SRS, H1 por classe de amplitude, valores de intervalo
+(a_w/MTVV/VDV), histograma/CDF, ODS, coerência múltipla, resposta do filtro de
+ponderação e H1 em bandas de 1/3 de oitava.
 
 **Fase** mostra o ângulo (desenrolado) do espectro complexo de bloco único —
 o mesmo que alimenta o cálculo do Anexo A — para um eixo por vez; a soma
 vetorial não tem fase com significado físico, por isso exige eixo específico.
 
 **Coerência** calcula γ²(f) = |Sxy|²/(Sxx·Syy) entre o primeiro arquivo marcado
-e cada um dos demais, via densidade espectral cruzada de Welch
-(`core.welch_cross_spectrum`). Só é informativa com mais de um segmento
-médio — com um único periodograma, γ² vale 1 em todo bin por construção — e só
-tem sentido físico entre registros de fato sincronizados; o Signal explorer
-não verifica isso (ao contrário da aba **Frequency domain**, que a restringe
-aos quatro pontos de uma mesma exposição, já com a base de tempo comum
-verificada). A nota abaixo do gráfico avisa quando a checagem de sincronismo
-não foi feita.
+e cada um dos demais, via densidade espectral cruzada de Welch. Só é informativa
+com mais de um segmento médio — com um único periodograma, γ² vale 1 em todo bin
+por construção — e só tem sentido físico entre registros de fato sincronizados.
 
-A tabela lateral traz, para o arquivo selecionado: número de amostras, duração,
-taxa de amostragem, RMS por eixo e soma vetorial, pico, fator de crista, VDV,
-curtose, frequência dominante e a classe de intensidade que a norma atribuiria.
+A tabela lateral traz, para o arquivo selecionado: amostras, duração, taxa de
+amostragem, RMS/pico/crest/VDV/curtose/assimetria, frequência dominante, métricas
+ISO 2631-1 ponderadas completas (a_w, A(8), MTVV, VDV ponderado), avaliação da
+Diretiva 2002/44/CE, zona de saúde do Anexo C e validade dos Anexos A/E.
 
-A curtose merece atenção: vale 3 para ruído gaussiano, e valores muito acima
-indicam conteúdo de choque. No `WL2s.txt` o eixo x dá 146, contra 6,3 no eixo z
-— o sinal longitudinal é dominado por eventos transientes raros e severos, o que
-é exatamente a situação que a soma de sexta potência da norma foi feita para
-capturar.
+### Junção de arquivos consecutivos
 
-O botão de exportação grava o espectro em CSV, com uma coluna por arquivo, para
-levar a outra ferramenta.
+O botão **Join selected → 1 signal** concatena os registros marcados na lista
+(na ordem em que aparecem) num único sinal e adiciona o resultado como novo item.
+Útil quando uma sessão longa foi gravada em vários arquivos consecutivos: cada
+arquivo fica como referência independente, o sinal conjunto recebe análise
+completa de todo o período.
+
+Requisito: todos os arquivos marcados devem ter a mesma taxa de amostragem.
+
+### Exportação PDF
+
+O botão **Export report PDF** abre um diálogo para escolher quais dos dezasseis
+tipos de gráfico incluir no PDF. O relatório gerado contém uma página de
+estatísticas por registro (A4 retrato, com tabela ISO 2631-1 completa, cores
+semânticas por faixa de risco, metadados) seguida de uma página por gráfico
+seleccionado (A4 paisagem, tamanho completo).
+
+O botão **Export spectrum to CSV** grava o espectro em CSV, com uma coluna por
+arquivo, para levar a outra ferramenta.
 
 ## Registrador de campo e NHO-09
 
-A sub-aba **Field logger / NHO-09**, dentro do explorador de sinais, lê os
-arquivos `.m` do registrador do laboratório. Um dia é carregado selecionando
-vários arquivos da mesma unidade de uma vez.
+A aba **Directive** monta um dia de trabalho a partir dos arquivos do
+registrador de campo e avalia a exposição pelos critérios da NHO-09, da Diretiva
+2002/44/CE e do método do laboratório.
 
-O registrador grava blocos de 2 s a cada 5 s — ciclo de trabalho de 40%,
-intencional. **Os blocos nunca são colados**: os espectros usam cada bloco como
-um segmento de Welch. Colar os blocos e janelar o conjunto subestimava as
-amplitudes em cerca de trinta vezes. E a dose do Anexo A da ISO 2631-5 não se
-aplica, porque 60% dos choques não foram gravados.
+Os registradores actuais gravam de forma contínua. Um dia é carregado
+seleccionando vários arquivos da mesma unidade de uma vez.
 
 O ganho de cada unidade é corrigido pela gravidade: parado, o módulo do vetor
 medido tem de ser 9,784 m/s² em Belo Horizonte. A coluna que contém a gravidade
 é tratada como eixo vertical.
+
+### Metadados do sujeito e da medição
+
+O painel de configuração da aba Directive contém campos para ID/nome do sujeito,
+idade, operador, sensor/modelo e número de série, e notas livres. Todos são
+opcionais e aparecem na página 1 do PDF exportado, facilitando a rastreabilidade
+para publicação sem exigir re-exportação quando os dados mudam.
+
+### Exportação PDF da aba Directive
+
+O botão **Export PDF** abre um diálogo de seleção de gráficos idêntico ao do
+Signal records. O relatório inclui: cabeçalho com nome do arquivo e data/hora,
+caixa de configuração da avaliação, caixa de informações do sujeito/medição
+(apenas campos preenchidos, em duas colunas), tabela de resultados com cores
+semânticas (verde/âmbar/vermelho por faixa de risco), rodapé com paginação, e
+uma página por gráfico selecionado em A4 paisagem.
 
 ### Avaliação NHO-09
 

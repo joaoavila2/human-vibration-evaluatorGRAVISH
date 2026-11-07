@@ -1,9 +1,21 @@
-"""Leitura e analise dos registros do registrador de campo do GRAVI-SH.
+"""Leitura e analise dos registros de campo do GRAVI-SH.
 
-O registrador grava arquivos .m que sao scripts MATLAB: blocos de
-DadosValores(:,:,len)=int16([...]) precedidos de um carimbo de tempo do RTC.
+MEDICOES ATUAIS SAO CONTINUAS. Os formatos em uso gravam a aceleracao sem
+interrupcao: o CSV "DateTime,AX,AY,AZ" do firmware VCI_nRF52840_accel_SD
+(833 Hz), o binario VIB1 (.dat) do firmware do XIAO nRF52840, e ainda o
+CSV "Time_ms,AX,AY,AZ" de bancada e o .txt ASCII de 4 colunas. Todos viram
+FieldRecord com continuous=True: o sinal e fatiado em blocos consecutivos so
+por conveniencia de armazenamento, e todo o processamento que depende de
+continuidade (ponderacao, MTVV, Clausula 5) trata a sequencia como um sinal
+unico (ver continuity.py). load_day_auto escolhe o leitor pela extensao e
+pelo cabecalho.
 
-Caracteristicas do formato, confirmadas no firmware (vibracoes.ino):
+FORMATO ANTIGO (.m). O registrador anterior gravava arquivos .m que sao
+scripts MATLAB: blocos de DadosValores(:,:,len)=int16([...]) precedidos de um
+carimbo de tempo do RTC. Esse modo de gravacao nao e mais usado; os arquivos
+continuam legiveis para reanalise de dados antigos.
+
+Caracteristicas do formato .m, confirmadas no firmware (vibracoes.ino):
 
   - MPU6050 em +-2 g, portanto 16384 LSB/g; os valores sao contagens brutas,
     sem nenhuma conversao ou calibracao aplicada;
@@ -12,13 +24,11 @@ Caracteristicas do formato, confirmadas no firmware (vibracoes.ino):
     modo que 3 s em cada 5 nao sao gravados. O ciclo de trabalho e de 40% e e
     intencional.
 
-A descontinuidade entre blocos e a razao para NAO concatenar os blocos e
-transformar o conjunto: cada colagem e um degrau que a transformada espalha por
-todo o espectro. A analise correta trata cada bloco como um segmento de Welch,
-o que dispensa qualquer colagem.
-
-Pelo mesmo motivo, a cadeia do Anexo A nao se aplica a estes registros: a dose
-de sexta potencia depende de contar todos os picos, e 60% deles nao existem.
+Nesses arquivos antigos a descontinuidade entre blocos e a razao para NAO
+concatenar os blocos e transformar o conjunto: cada colagem e um degrau que a
+transformada espalha por todo o espectro. Cada bloco e um trecho isolado, e a
+dose de sexta potencia do Anexo A nao se aplica (60% dos picos nao foram
+gravados).
 """
 import re
 from dataclasses import dataclass, field
@@ -26,11 +36,22 @@ from pathlib import Path
 
 import numpy as np
 
+from . import continuity
+
 LSB_PER_G = 16384.0          # +-2 g, registrador 0x1C = 0b00000000
 GRAVITY_BH = 9.784           # m/s2, gravidade local em Belo Horizonte
 NOMINAL_RATE = 1024.0
 BLOCK_SAMPLES = 2048
-BLOCK_PERIOD = 5.0           # s entre carimbos
+BLOCK_PERIOD = 5.0           # s entre carimbos no formato .m antigo
+
+# Remocao da componente estatica em registros continuos: um offset constante
+# por eixo, a media do registro inteiro -- a correcao de offset do quarto
+# passo de 5.1.3 da ISO 2631-5. Nada mais agressivo e possivel: a Clausula 5
+# passa o sinal a partir de 0,01 Hz (sexto passo), e uma media movel de
+# segundos funcionaria como um passa-alta acima disso, deformando quedas
+# livres longas. A mudanca lenta da gravidade com a inclinacao do assento
+# fica para os filtros de cada cadeia (0,4 Hz no Wk/Wd, 0,08 Hz no Wf,
+# 0,01 Hz na Clausula 5).
 
 # Curva de tendencia do CONEM2024: diferenca entre o MPU6050 e o padrao ouro
 # ICP 353B34, em m/s2, em funcao da frequencia. Levantada em uma unidade; a
@@ -46,7 +67,13 @@ _TS = re.compile(
 
 @dataclass
 class FieldRecord:
-    """Um arquivo do registrador: blocos de 2 s com carimbo de tempo."""
+    """Um arquivo (ou segmento) de aceleracao em blocos de BLOCK_SAMPLES.
+
+    continuous=True: os blocos sao fatias consecutivas de um sinal continuo
+    (todos os formatos atuais). False: blocos isolados do .m antigo.
+    absolute_time=True quando seconds e hora do dia de verdade (DateTime,
+    VIB1, .m); False quando o arquivo nao tem relogio e seconds comeca em 0.
+    """
     path: Path
     counts: np.ndarray                  # (n_blocos, 2048, 3), contagens brutas
     seconds: np.ndarray                 # segundos do dia de cada bloco
@@ -56,6 +83,8 @@ class FieldRecord:
     axis_sign: tuple = (1, 1, 1)
     gravity_axis: int = None
     notes: list = field(default_factory=list)
+    continuous: bool = False
+    absolute_time: bool = True
 
     @property
     def n_blocks(self):
@@ -78,14 +107,24 @@ class FieldRecord:
         return self.recorded_time / self.span
 
     def blocks_si(self, remove_gravity=True):
-        """Blocos em m/s2, ja orientados, calibrados e sem a componente estatica."""
+        """Blocos em m/s2, ja orientados, calibrados e sem a componente estatica.
+
+        Registro continuo: a componente estatica e a media de cada eixo no
+        registro inteiro (offset constante), e o array devolvido fica
+        marcado como uma faixa continua. Formato .m antigo: media de cada
+        bloco, que e isolado.
+        """
         a = self.counts / LSB_PER_G * GRAVITY_BH
         if self.scale is not None:
             a = a * self.scale
         a = a[:, :, list(self.axis_map)] * np.array(self.axis_sign)
+        if not self.continuous:
+            if remove_gravity:
+                a = a - a.mean(axis=1, keepdims=True)
+            return a
         if remove_gravity:
-            a = a - a.mean(axis=1, keepdims=True)
-        return a
+            a = a - a.mean(axis=(0, 1))
+        return continuity.mark(a, [(0, self.n_blocks)])
 
 
 def read_m(path, rate=NOMINAL_RATE, max_blocks=None):
@@ -334,6 +373,48 @@ class FieldDay:
     occupied: np.ndarray          # mascara booleana
     rate: float
 
+    def __post_init__(self):
+        self.mark_runs()
+
+    def mark_runs(self):
+        """Marca em continuity os blocos de cada registro continuo. Chamar
+        de novo sempre que self.blocks for substituido."""
+        runs, pos = [], 0
+        for r in self.records:
+            if r.continuous:
+                runs.append((pos, pos + r.n_blocks))
+            pos += r.n_blocks
+        continuity.mark(self.blocks, runs)
+
+    def record_blocks(self, i):
+        """Blocos do i-esimo registro (fatia de self.blocks), com a marcacao
+        de continuidade propria."""
+        a = sum(r.n_blocks for r in self.records[:i])
+        rec = self.records[i]
+        view = self.blocks[a:a + rec.n_blocks]
+        if rec.continuous:
+            continuity.mark(view, [(0, rec.n_blocks)])
+        return view
+
+    def contiguous_segments(self):
+        """(ini, fim) de cada trecho do dia que e um sinal so: um por registro
+        continuo, um por bloco no formato .m antigo."""
+        return continuity.segments(len(self.blocks),
+                                   continuity.runs_of(self.blocks))
+
+    @property
+    def continuous(self):
+        return bool(self.records) and all(r.continuous for r in self.records)
+
+    @property
+    def block_spacing(self):
+        """Intervalo tipico entre o inicio de blocos consecutivos, em s:
+        5 s no .m antigo, a propria duracao do bloco num registro continuo.
+        Serve para reconhecer uma lacuna real ao desenhar."""
+        d = np.diff(self.seconds)
+        d = d[d > 0]
+        return float(np.median(d)) if d.size else BLOCK_SAMPLES * self.dt
+
     @property
     def dt(self):
         return 1.0 / self.rate
@@ -360,6 +441,37 @@ class FieldDay:
         return float(np.mean(self.occupied)) if len(self.occupied) else 0.0
 
 
+def _make_day(recs, rate):
+    """Monta um FieldDay a partir de registros ja orientados.
+
+    Registros continuos sem relogio (CSV Time_ms, .txt) comecam em 0 s; aqui
+    cada um passa a comecar logo depois do anterior, com um bloco de folga
+    para a separacao aparecer nos graficos. A continuidade nao atravessa a
+    fronteira entre registros.
+
+    Quando todos os registros tem absolute_time=True, ordena pelo instante
+    inicial real antes de concatenar, para que arquivos carregados fora de
+    ordem cronologica (nomes nao refletem o horario) fiquem corretos.
+    """
+    if not recs:
+        raise ValueError('Nenhum registro valido.')
+    if all(r.absolute_time for r in recs):
+        recs = sorted(recs, key=lambda r: float(r.seconds[0]))
+    blocks, secs, occ, end = [], [], [], None
+    for r in recs:
+        blocks.append(r.blocks_si())
+        s = np.asarray(r.seconds, dtype=float)
+        block = BLOCK_SAMPLES / r.rate
+        if r.continuous and not r.absolute_time and end is not None:
+            s = s - s[0] + end + block
+        secs.append(s)
+        end = s[-1] + block
+        occ.append(occupancy_mask(r))
+    return FieldDay(records=recs, blocks=np.concatenate(blocks),
+                    seconds=np.concatenate(secs), occupied=np.concatenate(occ),
+                    rate=rate)
+
+
 def load_day(paths, calibrate=False, rate=NOMINAL_RATE, progress=None,
              position='seat'):
     """Le um conjunto de arquivos .m da mesma unidade como um dia."""
@@ -372,15 +484,11 @@ def load_day(paths, calibrate=False, rate=NOMINAL_RATE, progress=None,
             calibrate_from_gravity(rec)
         set_orientation(rec, rec.gravity_axis, position=position)
         recs.append(rec)
-        blocks.append(rec.blocks_si())
-        secs.append(rec.seconds)
-        occ.append(occupancy_mask(rec))
-    return FieldDay(records=recs, blocks=np.concatenate(blocks),
-                    seconds=np.concatenate(secs), occupied=np.concatenate(occ),
-                    rate=rate)
+    return _make_day(recs, rate)
 
 
-def _record_from_accel_g(accel_g, rate, path, extra_notes=()):
+def _record_from_accel_g(accel_g, rate, path, extra_notes=(),
+                         start_seconds=None):
     """Constroi um FieldRecord a partir de um fluxo continuo de aceleracao
     em g, fatiando em blocos fixos de BLOCK_SAMPLES amostras consecutivas,
     sem lacuna (duty_cycle ~1.0). Nucleo comum reaproveitado por
@@ -404,8 +512,12 @@ def _record_from_accel_g(accel_g, rate, path, extra_notes=()):
         n_blocks, BLOCK_SAMPLES, 3)
     block_period = BLOCK_SAMPLES / rate
     seconds = np.arange(n_blocks, dtype=float) * block_period
+    if start_seconds is not None:
+        seconds = seconds + start_seconds
 
-    rec = FieldRecord(path=path, counts=counts, seconds=seconds, rate=rate)
+    rec = FieldRecord(path=path, counts=counts, seconds=seconds, rate=rate,
+                      continuous=True,
+                      absolute_time=start_seconds is not None)
     dropped = n_total - n_blocks * BLOCK_SAMPLES
     if dropped:
         rec.notes.append(
@@ -484,14 +596,9 @@ def load_day_txt(paths, position='seat', progress=None):
                 f'selecione arquivos de uma unica sessao de gravacao')
         set_orientation(rec, rec.gravity_axis, position=position)
         recs.append(rec)
-        blocks.append(rec.blocks_si())
-        secs.append(rec.seconds)
-        occ.append(occupancy_mask(rec))
     if not recs:
         raise ValueError('Nenhum arquivo .txt valido selecionado.')
-    return FieldDay(records=recs, blocks=np.concatenate(blocks),
-                    seconds=np.concatenate(secs), occupied=np.concatenate(occ),
-                    rate=recs[0].rate)
+    return _make_day(recs, recs[0].rate)
 
 
 _DATETIME_META_RE = re.compile(r'rate_hz=([\d.]+)')
@@ -598,15 +705,30 @@ def load_day_csv_datetime(paths, rate=None, position='seat', progress=None):
                 f'pelo DateTime (resolucao de 1 ms): {seg_rate:.2f} Hz')
         accel_g = np.array([axes for _, axes in rows], dtype=np.float64)
         name = f'{Path(p).name}#{i + 1}' if len(jobs) > 1 else Path(p).name
-        rec = _record_from_accel_g(accel_g, seg_rate, name, extra_notes=notes)
+        rec = _record_from_accel_g(accel_g, seg_rate, name, extra_notes=notes,
+                                   start_seconds=_seconds_of_day(rows[0][0]))
         set_orientation(rec, rec.gravity_axis, position=position)
         recs.append(rec)
-        blocks.append(rec.blocks_si())
-        secs.append(rec.seconds)
-        occ.append(occupancy_mask(rec))
-    return FieldDay(records=recs, blocks=np.concatenate(blocks),
-                    seconds=np.concatenate(secs), occupied=np.concatenate(occ),
-                    rate=recs[0].rate)
+    if len({round(r.rate, 2) for r in recs}) > 1:
+        raise ValueError(
+            'Os segmentos tem taxas de amostragem diferentes ('
+            + ', '.join(f'{r.rate:.2f}' for r in recs) + ' Hz); '
+            'selecione arquivos de uma unica configuracao do firmware.')
+    return _make_day(recs, recs[0].rate)
+
+
+def _seconds_of_day(stamp):
+    """Hora do dia, em segundos, de um carimbo 'AAAA-MM-DD hh:mm:ss.fff'.
+    None se o carimbo nao puder ser lido."""
+    from datetime import datetime
+    try:
+        t = datetime.strptime(stamp.strip(), '%Y-%m-%d %H:%M:%S.%f')
+    except ValueError:
+        try:
+            t = datetime.strptime(stamp.strip(), '%Y-%m-%d %H:%M:%S')
+        except ValueError:
+            return None
+    return t.hour * 3600 + t.minute * 60 + t.second + t.microsecond / 1e6
 
 
 def load_day_csv(paths, rate, position='seat', progress=None):
@@ -623,12 +745,7 @@ def load_day_csv(paths, rate, position='seat', progress=None):
         rec = read_csv_accel(p, rate=rate)
         set_orientation(rec, rec.gravity_axis, position=position)
         recs.append(rec)
-        blocks.append(rec.blocks_si())
-        secs.append(rec.seconds)
-        occ.append(occupancy_mask(rec))
-    return FieldDay(records=recs, blocks=np.concatenate(blocks),
-                    seconds=np.concatenate(secs), occupied=np.concatenate(occ),
-                    rate=rate)
+    return _make_day(recs, rate)
 
 
 def reorient_day(day, position):
@@ -638,4 +755,156 @@ def reorient_day(day, position):
         set_orientation(rec, rec.gravity_axis, position=position)
         blocks.append(rec.blocks_si())
     day.blocks = np.concatenate(blocks)
+    day.mark_runs()
     return day
+
+
+# ----------------------------------------------------------------------
+# Binario VIB1 do XIAO nRF52840 e leitura automatica por formato
+# ----------------------------------------------------------------------
+
+def read_dat(path):
+    """Le um .dat binario VIB1 (firmware do XIAO nRF52840 Sense, LSM6DS3)
+    como registro continuo.
+
+    A taxa e a media dos carimbos em microssegundos do proprio arquivo, que
+    vem do relogio do microcontrolador; a nominal do cabecalho so entra numa
+    nota quando as duas diferem mais de 1%. Atrasos de escrita no cartao
+    aparecem como saltos de carimbo: sao contados numa nota, mas o sinal
+    segue tratado como continuo (o firmware nao descarta amostras).
+    """
+    from . import xiao_parser
+    xf = xiao_parser.parse_file(path)
+    if len(xf.t) < 2:
+        raise ValueError(f'{Path(path).name}: arquivo sem amostras')
+    span = float(xf.t[-1] - xf.t[0])
+    nominal = float(xf.sample_rate_hz)
+    rate = (len(xf.t) - 1) / span if span > 0 else nominal
+    notes = []
+    if abs(rate - nominal) > 0.01 * nominal:
+        notes.append(f'taxa pelos carimbos {rate:.2f} Hz, nominal do '
+                     f'cabecalho {nominal:.0f} Hz; usada a dos carimbos')
+    gaps = xf.gaps()
+    if gaps:
+        notes.append(f'{len(gaps)} salto(s) de carimbo acima de 2 periodos '
+                     f'(maior: {max(d for _, d in gaps) * 1000:.1f} ms)')
+    sens_g = xiao_parser._SENSITIVITY_MG_PER_LSB[xf.full_scale_g] / 1000.0
+    accel_g = xf.counts.astype(np.float64) * sens_g
+    start = (xf.start.hour * 3600 + xf.start.minute * 60 + xf.start.second
+             + float(xf.t[0]))
+    return _record_from_accel_g(accel_g, rate, Path(path), extra_notes=notes,
+                                start_seconds=start)
+
+
+FORMAT_NAMES = {
+    'm': 'field logger .m (old 2 s / 5 s format)',
+    'dat': 'XIAO binary .dat (VIB1)',
+    'datetime': 'DateTime CSV (VCI_nRF52840)',
+    'csv_ms': 'Time_ms CSV (bench firmware)',
+    'txt': 'ASCII .txt, 4 columns (Annex A/E)',
+}
+
+
+def detect_format(path):
+    """Formato de um arquivo, pela extensao e, num CSV, pelo cabecalho."""
+    path = Path(path)
+    ext = path.suffix.lower()
+    if ext == '.m':
+        return 'm'
+    if ext == '.dat':
+        return 'dat'
+    if ext in ('.txt', '.asc'):
+        return 'txt'
+    if ext == '.csv':
+        with open(path, errors='replace') as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#'):
+                    continue
+                if line.startswith('DateTime'):
+                    return 'datetime'
+                if 'Time_ms' in line:
+                    return 'csv_ms'
+                break
+        raise ValueError(f'{path.name}: CSV sem cabecalho DateTime,AX,AY,AZ '
+                         f'nem Time_ms,AX,AY,AZ')
+    raise ValueError(f'{path.name}: formato nao reconhecido ({ext})')
+
+
+def read_records(path, csv_rate=None):
+    """Registros de um arquivo de qualquer formato aceito (um DateTime CSV
+    pode ter varios segmentos de boot). Sem orientacao aplicada."""
+    kind = detect_format(path)
+    if kind == 'm':
+        return [read_m(path)]
+    if kind == 'dat':
+        return [read_dat(path)]
+    if kind == 'txt':
+        return [read_ascii_accel(path)]
+    if kind == 'csv_ms':
+        if csv_rate is None:
+            raise ValueError(f'{Path(path).name}: CSV Time_ms precisa da taxa '
+                             f'de amostragem informada')
+        return [read_csv_accel(path, rate=csv_rate)]
+    recs = []
+    segs = read_datetime_csv_segments(path)
+    for i, (rows, meta_rate) in enumerate(segs):
+        notes = []
+        rate = meta_rate
+        if rate is None:
+            rate = _estimate_datetime_rate(rows)
+            notes.append(f'taxa estimada pelo DateTime: {rate:.2f} Hz')
+        accel_g = np.array([axes for _, axes in rows], dtype=np.float64)
+        name = (f'{Path(path).name}#{i + 1}' if len(segs) > 1
+                else Path(path).name)
+        recs.append(_record_from_accel_g(
+            accel_g, rate, name, extra_notes=notes,
+            start_seconds=_seconds_of_day(rows[0][0])))
+    return recs
+
+
+def load_day_auto(paths, calibrate=False, position='seat', progress=None,
+                  csv_rate=None, datetime_rate=None):
+    """Le um dia em qualquer formato aceito, escolhendo o leitor pelo
+    arquivo. Todos os arquivos tem de ser do mesmo formato."""
+    paths = sorted(paths)
+    kinds = {detect_format(p) for p in paths}
+    if len(kinds) > 1:
+        raise ValueError('Os arquivos selecionados misturam formatos ('
+                         + ', '.join(FORMAT_NAMES[k] for k in sorted(kinds))
+                         + '); carregue um formato por vez.')
+    kind = kinds.pop()
+    if kind == 'm':
+        return load_day(paths, calibrate=calibrate, progress=progress,
+                        position=position)
+    if kind == 'txt':
+        day = load_day_txt(paths, position=position, progress=progress)
+    elif kind == 'csv_ms':
+        day = load_day_csv(paths, rate=csv_rate, position=position,
+                           progress=progress)
+    elif kind == 'datetime':
+        day = load_day_csv_datetime(paths, rate=datetime_rate,
+                                    position=position, progress=progress)
+    else:
+        day = load_day_dat(paths, position=position, progress=progress)
+    if calibrate:
+        for rec in day.records:
+            calibrate_from_gravity(rec)
+        reorient_day(day, position)
+    return day
+
+
+def load_day_dat(paths, position='seat', progress=None):
+    """Le um conjunto de .dat VIB1 do XIAO como um dia."""
+    recs = []
+    for i, p in enumerate(sorted(paths)):
+        if progress:
+            progress(i / max(len(paths), 1), f'Reading {Path(p).name}')
+        rec = read_dat(p)
+        if recs and abs(rec.rate - recs[0].rate) > 0.01 * recs[0].rate:
+            raise ValueError(
+                f'{Path(p).name}: taxa de amostragem ({rec.rate:.2f} Hz) nao '
+                f'bate com a do primeiro arquivo ({recs[0].rate:.2f} Hz)')
+        set_orientation(rec, rec.gravity_axis, position=position)
+        recs.append(rec)
+    return _make_day(recs, recs[0].rate)

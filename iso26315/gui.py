@@ -3,14 +3,16 @@ import sys
 from pathlib import Path
 
 import numpy as np
-from PySide6.QtCore import Qt, QThread, QTimer
+from PySide6.QtCore import Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QColor, QIcon, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QFileDialog,
+    QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
+    QDoubleSpinBox, QFileDialog, QInputDialog,
     QFormLayout, QGridLayout,
     QGroupBox, QHBoxLayout, QHeaderView, QLabel, QMainWindow, QMessageBox,
     QProgressBar, QPushButton, QRadioButton, QSizePolicy, QSpinBox, QStatusBar,
-    QTableWidget, QTableWidgetItem, QTabWidget, QTextEdit, QVBoxLayout, QWidget,
+    QMenu, QTableWidget, QTableWidgetItem, QTabWidget, QTextEdit, QToolButton,
+    QVBoxLayout, QWidget,
 )
 
 import matplotlib
@@ -19,15 +21,17 @@ from matplotlib.backends.backend_qtagg import (
     FigureCanvasQTAgg, NavigationToolbar2QT)
 from matplotlib.figure import Figure
 
-from . import core, workbook
+from . import core, freqplots, workbook
+from . import references
+from .layoututil import CollapsibleSection, settings_splitter
 from .analysis import Runner
+from .campaign import CampaignPanel
 from .clause5_tab import ClauseFiveTab
+from .batch_tab import BatchTab
 from .explorer import SignalExplorer
-from .field_explorer import FieldSignalExplorer
 from .field_panel import FieldPanel
-from .csv_import_panel import (
-    CsvImportPanel, DatetimeCsvImportPanel, TxtImportPanel)
 from .live_fft_panel import LiveFFTPanel
+from .signal_viewer import SignalViewer
 from .qtworker import Worker
 from .theme import (ACCENT, BAD_COLOR, BG_ALT, BORDER, HIGHLIGHT, OK_COLOR,
                     TEXT, WARN_COLOR, apply_theme)
@@ -71,13 +75,36 @@ class _FullscreenDialog(QDialog):
         _redraw_twice(self._canvas)
 
 
+# Vistas prontas da cascata 3D (elevacao, azimute). Nos graficos de cascata
+# x e a frequencia, y o tempo e z a amplitude.
+VIEWS_3D = [
+    ('3D (default)', (35, -60)),
+    ('Top: spectrogram (time x frequency)', (90, -90)),
+    ('Front: spectrum (amplitude x frequency)', (0, -90)),
+    ('Side: history (amplitude x time)', (0, 0)),
+]
+
+
 class Plot(QWidget):
     """Canvas com barra de navegacao e modo de tela cheia.
 
     Tela cheia por F11, Esc para sair, duplo clique no grafico alterna. A
     figura e o mesmo objeto nos dois modos, entao zoom e deslocamento
     aplicados sobrevivem a ida e volta.
+
+    Graficos 3D giram arrastando com o botao esquerdo (com Pan e Zoom da
+    barra desligados). O angulo escolhido sobrevive aos redesenhos, e o
+    botao "3D view" da barra oferece vistas prontas.
+
+    O botao "References" liga curvas de referencia (ISO 5982 e o modelo
+    infantil de Giacomin 2007) nos graficos de transmissibilidade H1. A
+    configuracao fica em self.references; quem desenha o H1 chama
+    references.draw_references, e references_changed pede o redesenho.
+    O botao "Estimators" faz o mesmo com self.estimators (H2, Hv, envelope
+    H1-H2 e banda de erro), lido por freqplots.draw_transmissibility.
     """
+
+    references_changed = Signal()
 
     def __init__(self):
         super().__init__()
@@ -92,10 +119,65 @@ class Plot(QWidget):
         btn.setToolTip('F11, or double-click the plot')
         btn.clicked.connect(self.toggle_fullscreen)
         bar.addWidget(btn)
+        self.view_btn = QToolButton()
+        self.view_btn.setText('3D view')
+        self.view_btn.setPopupMode(QToolButton.InstantPopup)
+        self.view_btn.setToolTip(
+            'Drag the 3D plot with the left mouse button to rotate it (Pan '
+            'and Zoom must be off). The angle is kept when the plot is '
+            'redrawn. This menu sets a ready view.')
+        menu = QMenu(self.view_btn)
+        for name, view in VIEWS_3D:
+            menu.addAction(name, lambda v=view: self.set_view3d(*v))
+        self.view_btn.setMenu(menu)
+        self.view_btn.setEnabled(False)
+        bar.addWidget(self.view_btn)
+        self.references = {'iso5982': False, 'child_mass': None}
+        self.ref_btn = QToolButton()
+        self.ref_btn.setText('References')
+        self.ref_btn.setPopupMode(QToolButton.InstantPopup)
+        self.ref_btn.setToolTip(
+            'Reference curves drawn over transmissibility (H1) plots, for '
+            'comparison only. ISO 5982: adult, 49-93 kg, no backrest. '
+            'Giacomin 2007: one-degree-of-freedom child model scaled by '
+            'body mass.')
+        ref_menu = QMenu(self.ref_btn)
+        self.ref_iso = ref_menu.addAction(
+            'ISO 5982 seat-to-head mean (adult, no backrest)')
+        self.ref_iso.setCheckable(True)
+        self.ref_iso.toggled.connect(self._toggle_iso5982)
+        self.ref_child = ref_menu.addAction(
+            'Child 1-DOF model (Giacomin 2007)...')
+        self.ref_child.setCheckable(True)
+        self.ref_child.triggered.connect(self._ask_child_mass)
+        self.ref_btn.setMenu(ref_menu)
+        bar.addWidget(self.ref_btn)
+        self.estimators = dict(freqplots.ESTIMATOR_DEFAULTS)
+        self.est_btn = QToolButton()
+        self.est_btn.setText('Estimators')
+        self.est_btn.setPopupMode(QToolButton.InstantPopup)
+        self.est_btn.setToolTip(
+            'Extra layers on transmissibility (H1) plots. H1 is exact with '
+            'noise only on the output channel, H2 with noise only on the '
+            'input; on a seated person both channels are noisy and the true '
+            'value lies between them.')
+        est_menu = QMenu(self.est_btn)
+        for key, text in (('envelope', 'H1-H2 envelope (shaded)'),
+                          ('h2', 'H2 = Gyy/Gyx (dashed)'),
+                          ('hv', 'Hv, total least squares (dash-dot)'),
+                          ('error', 'H1 random error band, ±2ε '
+                                    '(hatched)')):
+            act = est_menu.addAction(text)
+            act.setCheckable(True)
+            act.toggled.connect(lambda on, k=key: self._toggle_estimator(k, on))
+        self.est_btn.setMenu(est_menu)
+        bar.addWidget(self.est_btn)
         lay.addWidget(bar)
         lay.addWidget(self.canvas)
 
+        self._view3d = VIEWS_3D[0][1]
         self._window = None
+        self._fs_view_btn = None
         self._saved = None
         self._force_reset = False
         self._last_kind = object()      # sentinel: primeira chamada sempre "muda"
@@ -115,6 +197,24 @@ class Plot(QWidget):
         lay = QVBoxLayout(win)
         lay.setContentsMargins(0, 0, 0, 0)
         bar = NavigationToolbar2QT(self.canvas, win)
+        # Mirror the 3D view / References / Estimators buttons: share QMenus
+        # so the same state is reflected in both the main and fullscreen bars.
+        self._fs_view_btn = QToolButton()
+        self._fs_view_btn.setText('3D view')
+        self._fs_view_btn.setPopupMode(QToolButton.InstantPopup)
+        self._fs_view_btn.setMenu(self.view_btn.menu())
+        self._fs_view_btn.setEnabled(self.view_btn.isEnabled())
+        bar.addWidget(self._fs_view_btn)
+        fs_ref_btn = QToolButton()
+        fs_ref_btn.setText('References')
+        fs_ref_btn.setPopupMode(QToolButton.InstantPopup)
+        fs_ref_btn.setMenu(self.ref_btn.menu())
+        bar.addWidget(fs_ref_btn)
+        fs_est_btn = QToolButton()
+        fs_est_btn.setText('Estimators')
+        fs_est_btn.setPopupMode(QToolButton.InstantPopup)
+        fs_est_btn.setMenu(self.est_btn.menu())
+        bar.addWidget(fs_est_btn)
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         bar.addWidget(spacer)
@@ -154,6 +254,7 @@ class Plot(QWidget):
 
     def _restore(self):
         self._window = None
+        self._fs_view_btn = None
         self.figure.set_layout_engine('constrained')
         lay = self.layout()
         lay.addWidget(self.canvas)
@@ -183,7 +284,7 @@ class Plot(QWidget):
             self._force_reset = True
             self._last_kind = kind
 
-    def axes(self, n=1):
+    def axes(self, n=1, projection=None):
         """Limpa a figura e devolve os eixos, preservando o enquadramento.
 
         Redesenhar apaga a figura, e com ela o zoom que o usuario tinha
@@ -193,6 +294,23 @@ class Plot(QWidget):
         enquadramento completo. reset_if_changed() pode forcar o descarte
         mesmo com navegacao, quando o TIPO de grafico muda.
         """
+        if projection is not None:
+            # Eixos 3D: o enquadramento salvo e' 2D e nao se aplica, mas o
+            # angulo de visao (girado com o mouse) e guardado e reposto.
+            self._force_reset = False
+            self._saved = None
+            self._remember_view3d()
+            self.figure.clear()
+            ax = self.figure.add_subplot(111, projection=projection)
+            ax.view_init(*self._view3d)
+            self.view_btn.setEnabled(True)
+            if self._fs_view_btn is not None:
+                self._fs_view_btn.setEnabled(True)
+            return [ax]
+        self._remember_view3d()
+        self.view_btn.setEnabled(False)
+        if self._fs_view_btn is not None:
+            self._fs_view_btn.setEnabled(False)
         old = self.figure.axes
         if self._force_reset:
             self._saved = None
@@ -208,9 +326,48 @@ class Plot(QWidget):
         return [first] + [self.figure.add_subplot(n, 1, i + 1, sharex=first)
                           for i in range(1, n)]
 
+    def _toggle_estimator(self, key, on):
+        self.estimators[key] = on
+        self.references_changed.emit()
+
+    def _toggle_iso5982(self, on):
+        self.references['iso5982'] = on
+        self.references_changed.emit()
+
+    def _ask_child_mass(self, checked):
+        if not checked:
+            self.references['child_mass'] = None
+            self.references_changed.emit()
+            return
+        mass, ok = QInputDialog.getDouble(
+            self, 'Child model', 'Body mass of the child [kg]\n'
+            '(Giacomin 2007 regressions cover 6 to 108 kg; the measured '
+            'children were 5 to 12 kg):',
+            self.references['child_mass'] or 15.0, 3.0, 120.0, 1)
+        if not ok:
+            self.ref_child.setChecked(self.references['child_mass'] is not None)
+            return
+        self.references['child_mass'] = mass
+        self.ref_child.setText(f'Child 1-DOF model (Giacomin 2007), {mass:g} kg...')
+        self.references_changed.emit()
+
+    def _axes3d(self):
+        return [a for a in self.figure.axes if a.name == '3d']
+
+    def _remember_view3d(self):
+        for a in self._axes3d():
+            self._view3d = (a.elev, a.azim)
+            break
+
+    def set_view3d(self, elev, azim):
+        self._view3d = (elev, azim)
+        for a in self._axes3d():
+            a.view_init(elev, azim)
+        self.canvas.draw_idle()
+
     def finish(self, *axes):
         for ax in axes:
-            ax.spines[['top', 'right']].set_visible(False)
+            pass  # spines controlled by plot_style (all 4 visible, like MATLAB)
         tb = self._toolbar()
         if tb is not None:
             tb.update()                     # descarta o historico dos eixos mortos
@@ -267,26 +424,21 @@ class MainWindow(QMainWindow):
         tabs.addTab(self.clause5, 'Clause 5 / Annex C')
         # O explorador ganha uma sub-aba para os dados do registrador de campo.
         # O explorador de registros ASCII fica intocado na primeira sub-aba.
-        self.field = FieldPanel(Plot, self.status)
-        self.field_explorer = FieldSignalExplorer(Plot, self.status)
+        self.campaign = CampaignPanel()
+        self.field = FieldPanel(Plot, self.status, store=self.store,
+                                campaign=self.campaign)
         explorer_tabs = QTabWidget()
-        explorer_tabs.addTab(self.explorer, 'ASCII records')
-        explorer_tabs.addTab(self.field_explorer, 'Field logger records (.m)')
+        explorer_tabs.addTab(self.explorer, 'Signal records')
         explorer_tabs.addTab(self.field, 'Directive')
-        _to_directive = lambda: explorer_tabs.setCurrentWidget(self.field)
-        self.csv_import = CsvImportPanel(
-            self.field, self.status, on_loaded=_to_directive)
-        explorer_tabs.addTab(self.csv_import, 'Continuous CSV import')
-        self.txt_import = TxtImportPanel(
-            self.field, self.status, on_loaded=_to_directive)
-        explorer_tabs.addTab(self.txt_import, 'ASCII .txt import')
-        self.datetime_csv_import = DatetimeCsvImportPanel(
-            self.field, self.status, on_loaded=_to_directive)
-        explorer_tabs.addTab(self.datetime_csv_import, 'DateTime CSV import')
+        explorer_tabs.addTab(self.campaign, 'Campaign')
         self.explorer_tabs = explorer_tabs
         tabs.addTab(explorer_tabs, 'Signal explorer')
         self.live_fft = LiveFFTPanel(Plot, self.status)
         tabs.addTab(self.live_fft, 'Live FFT (Xiao)')
+        self.signal_viewer = SignalViewer(self.status)
+        tabs.addTab(self.signal_viewer, 'Visualizador')
+        self.batch = BatchTab(self.status)
+        tabs.addTab(self.batch, 'Processamento em Lote')
         self.tabs = tabs
         self._tabs_shown = False
         self.setCentralWidget(tabs)
@@ -425,6 +577,11 @@ class MainWindow(QMainWindow):
         self.protection.setRange(1, 99)
         self.protection.setValue(50)
         self.protection.setSuffix(' %')
+        self.protection.setToolTip(
+            'Formula (E.2) represents about 50% of the population (the norm '
+            'value). Other values are NOT in ISO 2631-5: the ultimate strength '
+            'is lowered following Seidel et al. (2008), about 1.5 MPa less for '
+            '95%, so a higher protection gives a higher R.')
         f.addRow('Population protection', self.protection)
         self.subclass = QComboBox()
         self.subclass.addItems(['1 (default)', '2', '3'])
@@ -440,6 +597,21 @@ class MainWindow(QMainWindow):
         self.unwrap.toggled.connect(
             lambda on: setattr(core, 'UNWRAP_PHASE', on))
         f.addRow('', self.unwrap)
+        self.regime_override = QComboBox()
+        self.regime_override.addItems([
+            'Auto (ISO 2631-5, 9.81 m/s²)',
+            'Force: Annex A/E — vehicle vibration',
+            'Force: Clause 5 / Annex C — shock / loss of contact',
+        ])
+        self.regime_override.setToolTip(
+            'The ISO 2631-5 validity criterion (Clause 4 / A.2) routes exposures: '
+            'band-limited z peak ≤ 9.81 m/s² → Annex A/E; '
+            'above → Clause 5 / Annex C.\n'
+            'Forcing overrides the routing label for documentation purposes — '
+            'the Annex A/E computation still runs. NOT normative.')
+        self.regime_override.currentIndexChanged.connect(
+            lambda _: self._show_validity() if self.assessment is not None else None)
+        f.addRow('Regime', self.regime_override)
 
         logo_row = QHBoxLayout()
         logo_row.addStretch()
@@ -459,6 +631,11 @@ class MainWindow(QMainWindow):
 
         bar = QHBoxLayout()
         bar.addStretch()
+        clear_setup_btn = QPushButton('Clear')
+        clear_setup_btn.setObjectName('secondary')
+        clear_setup_btn.setToolTip('Discard the loaded spreadsheet and all results.')
+        clear_setup_btn.clicked.connect(self.clear_setup)
+        bar.addWidget(clear_setup_btn)
         self.run_btn = QPushButton('Run analysis')
         self.run_btn.setEnabled(False)
         self.run_btn.clicked.connect(self.run_analysis)
@@ -505,13 +682,22 @@ class MainWindow(QMainWindow):
         self.export_btn.setEnabled(False)
         self.export_btn.clicked.connect(self.export)
         bar.addWidget(self.export_btn)
+        self.export_pdf_btn = QPushButton('Export PDF report...')
+        self.export_pdf_btn.setObjectName('secondary')
+        self.export_pdf_btn.setEnabled(False)
+        self.export_pdf_btn.clicked.connect(self.export_pdf)
+        bar.addWidget(self.export_pdf_btn)
         lay.addLayout(bar)
         return page
 
     # -- Frequency domain ---------------------------------------------
     def _build_spectra(self):
         page = QWidget()
-        lay = QVBoxLayout(page)
+        outer = QVBoxLayout(page)
+        outer.setContentsMargins(0, 0, 0, 0)
+        upper = QWidget()
+        lay = QVBoxLayout(upper)
+        lay.setContentsMargins(0, 0, 0, 0)
 
         ctrl = QGroupBox('Plot controls')
         g = QGridLayout(ctrl)
@@ -531,6 +717,8 @@ class MainWindow(QMainWindow):
             'Compression dose vs static stress',
             'Spectrogram (time-frequency)',
             'Shock Response Spectrum (SRS)',
+            'Transmissibility H1 (reference -> other points)',
+            'Time series: raw acceleration vs time',
         ])
         g.addWidget(self.spec_kind, 0, 3)
 
@@ -562,6 +750,34 @@ class MainWindow(QMainWindow):
         self.log_scale = QCheckBox('Logarithmic amplitude')
         self.log_scale.setChecked(True)
         g.addWidget(self.log_scale, 3, 2, 1, 2)
+        self.spec_weight_curve = QCheckBox(
+            'Overlay weighting curve (from the panel below)')
+        self.spec_weight_curve.setToolTip(
+            'Draws the frequency-weighting filter\'s own gain, normalised to '
+            'its peak, on a secondary axis -- shows where the excitation '
+            'energy sits relative to what the norm boosts/attenuates. Only '
+            'drawn on the excitation acceleration spectrum, and only for '
+            'axes with a weighting selected in the panel below.')
+        g.addWidget(self.spec_weight_curve, 4, 0, 1, 4)
+        self.spec_hp = QCheckBox('High-pass Butterworth pre-filter')
+        self.spec_hp.setToolTip(
+            'Zero-phase Butterworth high-pass (order 6, applied forward and '
+            'backward) on the signals before computing coherence, '
+            'transmissibility or the spectrogram. Removes slow drift and '
+            'voluntary movement below the cutoff (e.g. 0.5 Hz for infant '
+            'transport). View only: does not change dose or risk.')
+        g.addWidget(self.spec_hp, 5, 0, 1, 2)
+        self.spec_hp_fc = QDoubleSpinBox()
+        self.spec_hp_fc.setRange(0.05, 20.0)
+        self.spec_hp_fc.setSingleStep(0.1)
+        self.spec_hp_fc.setValue(0.5)
+        self.spec_hp_fc.setSuffix(' Hz cutoff')
+        g.addWidget(self.spec_hp_fc, 5, 2)
+        self.spec_waterfall = QCheckBox('3D waterfall (spectrogram)')
+        self.spec_waterfall.setToolTip(
+            'Draws the spectrogram as a waterfall: one spectrum line per '
+            'time step, stacked along the time axis.')
+        g.addWidget(self.spec_waterfall, 5, 3)
         g.setColumnStretch(1, 1)
         g.setColumnStretch(3, 1)
         lay.addWidget(ctrl)
@@ -629,10 +845,14 @@ class MainWindow(QMainWindow):
                   self.spec_overlap, self.spec_quantity):
             w.currentIndexChanged.connect(self.update_spectra)
         self.spec_band.valueChanged.connect(self.update_spectra)
+        self.spec_hp.toggled.connect(self.update_spectra)
+        self.spec_hp_fc.valueChanged.connect(self.update_spectra)
+        self.spec_waterfall.toggled.connect(self.update_spectra)
 
         self.spec_weight = WeightingPanel()
         self.spec_weight.changed.connect(self.update_spectra)
-        lay.addWidget(self.spec_weight)
+        lay.addWidget(CollapsibleSection(
+            'Frequency weighting (display only)', self.spec_weight, False))
 
         limit_box = QGroupBox('Reference limit curve (optional)')
         self.spec_limit_box = limit_box
@@ -672,8 +892,8 @@ class MainWindow(QMainWindow):
         self.spec_limit_status = QLabel('')
         self.spec_limit_status.setWordWrap(True)
         limit_v.addWidget(self.spec_limit_status)
-        limit_box.setMaximumHeight(190)
-        lay.addWidget(limit_box)
+        lay.addWidget(CollapsibleSection(
+            'Reference limit curve (optional)', limit_box, False))
 
         self.spec_limit_enable.toggled.connect(self.update_spectra)
         self.spec_limit_table.itemChanged.connect(self._on_limit_table_changed)
@@ -681,14 +901,14 @@ class MainWindow(QMainWindow):
         for w in (self.spec_exp, self.spec_kind, self.spec_loc, self.spec_axis,
                   self.spec_disc):
             w.currentIndexChanged.connect(self.update_spectra)
-        for w in (self.spec_raw, self.log_scale, self.spec_full):
+        for w in (self.spec_raw, self.log_scale, self.spec_full,
+                  self.spec_weight_curve):
             w.stateChanged.connect(self.update_spectra)
 
-        for panel in (ctrl, spec, self.spec_weight):
-            panel.setMaximumHeight(150)
         self.spec_plot = Plot()
-        lay.addWidget(self.spec_plot, 1)
-        lay.setStretch(lay.indexOf(self.spec_plot), 1)
+        self.spec_plot.references_changed.connect(self.update_spectra)
+        outer.addWidget(settings_splitter(
+            upper, self.spec_plot, 'plot settings', upper_share=0.30), 1)
         return page
 
     # -- Time domain ---------------------------------------------------
@@ -835,6 +1055,29 @@ class MainWindow(QMainWindow):
         return page
 
     # ------------------------------------------------------------------
+    def clear_setup(self):
+        """Descarta a planilha carregada e todos os resultados do Anexo A/E."""
+        self.history = None
+        self.assessment = None
+        self.file_label.setText('No spreadsheet loaded')
+        self.file_label.setObjectName('muted')
+        self.file_label.setStyleSheet('')
+        self.acc_label.setText('Acceleration folder: same as the spreadsheet')
+        self.acc_label.setObjectName('muted')
+        self.acc_label.setStyleSheet('')
+        self.summary.clear()
+        self.run_btn.setEnabled(False)
+        if self._tabs_shown:
+            # Remove as sub-abas de resultado do Anexo A da barra de abas.
+            # Iterar ao contrário para que remoções não deslocam índices das
+            # seguintes.
+            for widget, _ in reversed(self._result_tabs):
+                idx = self.tabs.indexOf(widget)
+                if idx >= 0:
+                    self.tabs.removeTab(idx)
+            self._tabs_shown = False
+        self.status('Annex A / Annex E cleared.')
+
     def open_history(self):
         path, _ = QFileDialog.getOpenFileName(
             self, 'Open exposure history', '',
@@ -955,6 +1198,7 @@ class MainWindow(QMainWindow):
         self.assessment = assessment
         self._show_results()
         self.export_btn.setEnabled(True)
+        self.export_pdf_btn.setEnabled(True)
         plottable = [n for n, r in assessment.exposures.items()
                      if getattr(r, 'forces', None) is not None]
         for combo in (self.spec_exp, self.time_exp, self.proc_exp):
@@ -1031,7 +1275,27 @@ class MainWindow(QMainWindow):
         for res in self.assessment.exposures.values():
             excs.update(res.excitations)
         chk = core.validity_check(excs)
+        override = self.regime_override.currentIndex()  # 0=auto, 1=force A/E, 2=force C5
+
+        # Per-axis peaks summary (blind spot of Section 16.1 — norm only checks z,
+        # but x/y peaks help the user understand the full exposure character)
+        axis_lines = []
+        for name, xyz in (chk.get('peaks_xyz') or {}).items():
+            labels = ['x', 'y', 'z']
+            vals = ', '.join(
+                f'{labels[i]}: {xyz[i]:.2f}' for i in range(len(xyz)))
+            axis_lines.append(f'&nbsp;&nbsp;<b>{name}</b>: {vals} m/s&sup2; (band-limited)')
+        per_axis_msg = ('<br><i>Per-axis peaks:</i><br>' + '<br>'.join(axis_lines)
+                        if axis_lines else '')
+
         drift_msg = ''
+        # Inicio de exposicao antes dos 20 anos: a reta da Formula (E.2) e
+        # extrapolada (ver references.start_age_warning).
+        age_msg = references.start_age_warning(
+            getattr(self.assessment, 'start_age', 20), 'E')
+        if age_msg:
+            drift_msg += (f'<br><b style="color:{BAD_COLOR}">Outside the '
+                          f'calibration domain:</b> {age_msg}')
         for name, rep in (self.assessment.drift or {}).items():
             drift_msg += (
                 f'<br><b style="color:{BAD_COLOR}">Time base drift in '
@@ -1040,30 +1304,53 @@ class MainWindow(QMainWindow):
                 f'the shortest one, discarding {rep["samples_dropped"]} '
                 f'samples. Check the synchronisation between sensors.')
         self.validity.setVisible(True)
-        if chk['valid'] and not drift_msg:
+
+        forced_msg = ''
+        effective_valid = chk['valid']
+        if override == 1 and not chk['valid']:
+            effective_valid = True
+            forced_msg = (f'<br><b style="color:#9a6200">⚠ Regime forced to '
+                          f'Annex A/E (vehicle vibration) &mdash; NOT normative. '
+                          f'The ISO 2631-5 validity check failed for this exposure '
+                          f'({chk["worst"]:.2f} m/s² &gt; '
+                          f'{chk["limit"]:.2f} m/s²).</b>')
+        elif override == 2 and chk['valid']:
+            effective_valid = False
+            forced_msg = (f'<br><b style="color:#9a6200">⚠ Regime forced to '
+                          f'Clause 5 / Annex C (shock) &mdash; NOT normative. '
+                          f'The ISO 2631-5 validity check passed for this exposure '
+                          f'({chk["worst"]:.2f} m/s² &le; '
+                          f'{chk["limit"]:.2f} m/s²).</b>')
+
+        if effective_valid:
+            has_warnings = bool(drift_msg) or bool(forced_msg)
+            bg, border = (('#fff4e0', '#e6c38a') if has_warnings
+                          else ('#e8f4ea', '#9fc9a8'))
             self.validity.setStyleSheet(
-                f'background:#e8f4ea; border:1px solid #9fc9a8; border-radius:5px;'
+                f'background:{bg}; border:1px solid {border}; border-radius:5px;'
                 f'padding:8px; color:{TEXT};')
             self.validity.setText(
-                f'Validity check passed: highest W<sub>k</sub>-weighted z peak is '
-                f'{chk["worst"]:.2f} m/s&sup2;, within the '
-                f'{chk["limit"]:.2f} m/s&sup2; limit for Annexes A and E.'
-                + drift_msg)
+                f'Validity check passed: highest band-limited (0.4–100 Hz) '
+                f'z peak is {chk["worst"]:.2f} m/s&sup2;, within the '
+                f'{chk["limit"]:.2f} m/s&sup2; limit for Annexes A and E.'
+                + per_axis_msg + forced_msg + drift_msg)
         else:
-            worst = max(chk['peaks'], key=chk['peaks'].get)
+            worst_name = max(chk['peaks'], key=chk['peaks'].get) if chk['peaks'] else ''
             self.validity.setStyleSheet(
                 f'background:#fdeaea; border:1px solid #e0a6a2; border-radius:5px;'
                 f'padding:8px; color:{TEXT};')
             self.validity.setText(
                 f'<b style="color:{BAD_COLOR}">Validity check failed.</b> '
-                f'The W<sub>k</sub>-weighted z peak reaches '
-                f'<b>{chk["worst"]:.2f} m/s&sup2;</b> in "{worst}", above the '
-                f'{chk["limit"]:.2f} m/s&sup2; limit. ISO 2631-5 states that '
-                f'Annexes A and E do not apply to such exposures; Clause 5 '
-                f'and Annexes C and D apply instead &mdash; see the '
-                f'"Clause 5 / Annex C" tab. The numbers below are still '
-                f'computed, but they fall outside the validity range of the '
-                f'method that produced them.' + drift_msg)
+                f'The band-limited (0.4–100 Hz) z peak reaches '
+                f'<b>{chk["worst"]:.2f} m/s&sup2;</b>'
+                + (f' in &ldquo;{worst_name}&rdquo;' if worst_name else '') +
+                f', above the {chk["limit"]:.2f} m/s&sup2; limit. '
+                f'ISO 2631-5 states that Annexes A and E do not apply to such '
+                f'exposures; Clause 5 and Annexes C and D apply instead '
+                f'&mdash; see the &ldquo;Clause 5 / Annex C&rdquo; tab. '
+                f'The numbers below are still computed, but they fall outside '
+                f'the validity range of the method that produced them.'
+                + per_axis_msg + forced_msg + drift_msg)
 
     # ------------------------------------------------------------------
     def _current(self, combo):
@@ -1178,10 +1465,14 @@ class MainWindow(QMainWindow):
         # 4 transfer functions, 5 dose vs static stress, 6 spectrogram,
         # 7 shock response spectrum.
         self.spec_plot.reset_if_changed(kind)
-        self.spec_loc.setEnabled(kind in (0, 1, 2, 6, 7))
+        self.spec_loc.setEnabled(kind in (0, 1, 2, 6, 7, 8, 9))
         self.spec_loc_label.setText(
-            'Reference point' if kind == 2 else 'Contact point')
-        self.spec_axis.setEnabled(kind in (0, 1, 2, 6, 7))
+            'Reference point' if kind in (2, 8) else 'Contact point')
+        self.spec_axis.setEnabled(kind in (0, 1, 2, 6, 7, 8, 9))
+        self.spec_hp.setEnabled(kind in (2, 6, 8))
+        self.spec_hp_fc.setEnabled(
+            kind in (2, 6, 8) and self.spec_hp.isChecked())
+        self.spec_waterfall.setEnabled(kind == 6)
         self.spec_raw.setEnabled(kind == 0)
         self.spec_full.setEnabled(kind == 0)
         self.spec_disc.setEnabled(kind in (3, 4))
@@ -1189,7 +1480,7 @@ class MainWindow(QMainWindow):
         block = method == core.SPECTRUM_METHODS[0]
         no_welch = method in (core.SPECTRUM_METHODS[0], core.SPECTRUM_METHODS[5])
         for w in (self.spec_window, self.spec_nperseg, self.spec_overlap):
-            w.setEnabled(kind in (0, 2, 6))
+            w.setEnabled(kind in (0, 2, 6, 8))
         self.spec_method.setEnabled(kind == 0)
         self.spec_band.setEnabled(kind == 0)
         self.spec_weight.setEnabled(kind == 0)
@@ -1222,8 +1513,19 @@ class MainWindow(QMainWindow):
             self._plot_dose(res)
         elif kind == 6:
             self._plot_spectrogram(res, logy)
-        else:
+        elif kind == 7:
             self._plot_srs(res, logy)
+        elif kind == 8:
+            self._plot_transmissibility(res, logy)
+        else:
+            self._plot_timeseries_raw(res)
+
+    def _spec_signal(self, exc, axis):
+        """Sinal de um canal, com o passa-alta opcional da aba."""
+        x = exc.accel[:, axis]
+        if self.spec_hp.isChecked():
+            x = core.highpass_butterworth(x, exc.dt, self.spec_hp_fc.value())
+        return x
 
     def _plot_excitation(self, res, logy):
         ax, = self.spec_plot.axes()
@@ -1286,10 +1588,57 @@ class MainWindow(QMainWindow):
         ax.set_title(f'Excitation spectrum - {method}')
         if logy:
             ax.set_yscale('log')
-        ax.legend(fontsize=8)
-        self.spec_note.setText(note)
+        ax.legend(fontsize=8, loc='upper left')
+        band_note = self._band_diagnostic(res.excitations[names[self._selected(self.spec_loc, 4)[0]]], axis) \
+            if self._selected(self.spec_loc, 4) else ''
+        self.spec_note.setText((note + '  ' if note else '') + band_note)
         self._update_limit_status(res, names, method)
+        self._overlay_weighting_curve(ax)
         self.spec_plot.finish(ax)
+
+    BAND_EDGES = (0.5, 2.0, 8.0, 20.0, 80.0)
+    BAND_LABELS = ('0.5-2 Hz (rigid-body/low-freq)', '2-8 Hz (whole-body resonance)',
+                   '8-20 Hz (seat structure/impulse)', '20-80 Hz (high-freq/shake)')
+
+    def _band_diagnostic(self, exc, axis):
+        """Diagnostico informativo: RMS em 4 faixas de frequencia padrao,
+        pra ver se o problema e' ressonancia baixa, impulso, ou vibracao de
+        alta frequencia -- nao muda nenhum calculo de dose/risco."""
+        c = 2 if axis is None else axis
+        rms = core.band_rms(*core.welch_spectrum(exc.accel[:, c], exc.dt, kind='psd')[:2],
+                             self.BAND_EDGES)
+        parts = [f'{lbl.split(" ", 1)[0]}: {v:.3f}' for lbl, v in zip(self.BAND_LABELS, rms)]
+        return 'Band RMS [m/s2] -- ' + ', '.join(parts)
+
+    def _overlay_weighting_curve(self, ax):
+        """Desenha, num eixo Y secundario, o ganho |H(f)| de cada ponderacao
+        selecionada no painel abaixo (normalizado pelo pico) -- so' pra
+        contexto visual de onde a energia da excitacao cai em relacao ao
+        que a norma reforca/atenua. Nunca muda o calculo de dose/risco."""
+        if not self.spec_weight_curve.isChecked():
+            return
+        cfg = self.spec_weight.config()
+        seen = {}
+        for ax_name, (name, _k) in cfg.items():
+            if name is None or name in seen:
+                continue
+            seen[name] = ax_name
+        if not seen:
+            return
+        xlim = ax.get_xlim()
+        freq = np.linspace(max(xlim[0], 0.1), max(xlim[1], 1.0), 400)
+        ax2 = ax.twinx()
+        ax2.set_ylabel('Weighting gain (normalised to peak)')
+        ax2.set_ylim(0, 1.15)
+        styles = ['--', '-.', ':']
+        for i, (name, ax_name) in enumerate(seen.items()):
+            gain = np.abs(core.weighting_response(name, freq))
+            peak = gain.max()
+            if peak > 0:
+                gain = gain / peak
+            ax2.plot(freq, gain, ls=styles[i % len(styles)], lw=1.1,
+                     color='#6c757d', alpha=0.8, label=f'{name} ({ax_name})')
+        ax2.legend(fontsize=8, loc='upper right')
 
     def _plot_phase(self, res):
         ax, = self.spec_plot.axes()
@@ -1357,13 +1706,17 @@ class MainWindow(QMainWindow):
             if exc.dt != ref.dt or exc.accel.shape[0] != ref.accel.shape[0]:
                 continue
             f, gamma2, navg = core.coherence_spectrum(
-                ref.accel[:, axis], exc.accel[:, axis], ref.dt,
-                window=window, nperseg=nperseg, overlap=overlap)
+                self._spec_signal(ref, axis), self._spec_signal(exc, axis),
+                ref.dt, window=window, nperseg=nperseg, overlap=overlap)
             min_navg = navg if min_navg is None else min(min_navg, navg)
             ax.plot(f, gamma2, lw=1.1,
                     color=SERIES_COLORS[li % len(SERIES_COLORS)],
                     label=f'{core.LOCATION_NAMES[ref_i]} vs '
                           f'{core.LOCATION_NAMES[li]}')
+        if min_navg is not None and min_navg >= 2:
+            cl = core.coherence_confidence_limit(min_navg)
+            ax.axhline(cl, color='#c0392b', lw=1.0, ls='--',
+                       label=f'95% confidence limit ({cl:.2f})')
         ax.set_xlim(0, core.LOWPASS_HZ)
         ax.set_ylim(0, 1.05)
         ax.set_xlabel('Frequency [Hz]')
@@ -1468,7 +1821,7 @@ class MainWindow(QMainWindow):
         exc, axis, loc_i = picked
         qty = self.spec_quantity.currentData()
         t, f, S = core.spectrogram(
-            exc.accel[:, axis], exc.dt,
+            self._spec_signal(exc, axis), exc.dt,
             window=self.spec_window.currentText(),
             nperseg=self.spec_nperseg.currentData(),
             overlap=self.spec_overlap.currentData(),
@@ -1480,20 +1833,125 @@ class MainWindow(QMainWindow):
             with np.errstate(divide='ignore'):
                 z = 20 * np.log10(np.maximum(z, 1e-12))
             label = f'{core.QUANTITY_LABELS[qty]} level [dB re 1 {core.QUANTITY_UNITS[qty]}]'
-        mesh = ax.pcolormesh(t, f[keep], z, shading='auto', cmap='viridis')
-        cb = self.spec_plot.figure.colorbar(mesh, ax=ax)
-        cb.set_label(label)
-        ax.set_xlabel('Time [s]')
-        ax.set_ylabel('Frequency [Hz]')
-        ax.set_title(f'Spectrogram - {core.LOCATION_NAMES[loc_i]} '
-                    f'({core.AXIS_NAMES[axis]})')
+        title = (f'Spectrogram - {core.LOCATION_NAMES[loc_i]} '
+                 f'({core.AXIS_NAMES[axis]})')
+        if self.spec_waterfall.isChecked():
+            self._draw_waterfall(t, f[keep], z, label, title)
+        else:
+            mesh = ax.pcolormesh(t, f[keep], z, shading='auto', cmap='viridis')
+            cb = self.spec_plot.figure.colorbar(mesh, ax=ax)
+            cb.set_label(label)
+            ax.set_xlabel('Time [s]')
+            ax.set_ylabel('Frequency [Hz]')
+            ax.set_title(title)
         self.spec_note.setText(
             f'{self.spec_nperseg.currentData()}-sample segments, '
             f'{self.spec_window.currentText()} window, '
             f'{self.spec_overlap.currentData() * 100:.0f}% overlap. Shows '
             'how the frequency content changes over time -- unlike Welch/'
             'octave views, which only give the whole-record average.')
-        self.spec_plot.finish(ax)
+        if self.spec_waterfall.isChecked():
+            self.spec_plot.finish(*self.spec_plot.figure.axes)
+        else:
+            self.spec_plot.finish(ax)
+
+    def _draw_waterfall(self, t, f, z, zlabel, title, max_lines=100):
+        """Cascata 3D: uma linha de espectro por instante, empilhadas no
+        tempo. Limita a ~max_lines linhas (decimando no tempo) para manter
+        a figura legivel e rapida."""
+        from matplotlib import colormaps
+        ax, = self.spec_plot.axes(projection='3d')
+        step = max(1, int(np.ceil(len(t) / max_lines)))
+        idx = np.arange(0, len(t), step)
+        zmax = float(np.nanmax(z)) or 1.0
+        cmap = colormaps['viridis']
+        for j in idx[::-1]:
+            level = float(np.nanmax(z[:, j])) / zmax
+            ax.plot(f, np.full_like(f, t[j]), z[:, j], lw=0.8,
+                    color=cmap(min(1.0, max(0.0, level))))
+        ax.set_xlabel('Frequency [Hz]')
+        ax.set_ylabel('Time [s]')
+        ax.set_zlabel(zlabel)
+        ax.set_title(title)
+
+    def _plot_transmissibility(self, res, logy):
+        ax1, ax2 = self.spec_plot.axes(2)
+        names = list(res.excitations)
+        axis = self.spec_axis.currentData()
+        ref_i = self.spec_loc.currentData()
+        if axis is None or ref_i is None:
+            ax1.text(0.5, 0.5, 'Pick a reference (input) contact point and '
+                     'a single axis (x, y or z). H1 is computed from the '
+                     'reference to every other point.', ha='center',
+                     va='center', color='#6c757d', wrap=True,
+                     transform=ax1.transAxes)
+            self.spec_plot.finish(ax1, ax2)
+            return
+        ref = res.excitations[names[ref_i]]
+        if ref.accel.shape[0] == 0:
+            ax1.text(0.5, 0.5, f'"{core.LOCATION_NAMES[ref_i]}" has no '
+                     'measurement (Zero) in this exposure.', ha='center',
+                     va='center', color='#6c757d', transform=ax1.transAxes)
+            self.spec_plot.finish(ax1, ax2)
+            return
+        nperseg = self.spec_nperseg.currentData()
+        overlap = self.spec_overlap.currentData()
+        window = self.spec_window.currentText()
+        min_navg = None
+        for li in range(4):
+            if li == ref_i:
+                continue
+            exc = res.excitations[names[li]]
+            if exc.accel.shape[0] == 0:
+                continue
+            if exc.dt != ref.dt or exc.accel.shape[0] != ref.accel.shape[0]:
+                continue
+            f, est, navg = core.transmissibility_estimates(
+                self._spec_signal(ref, axis), self._spec_signal(exc, axis),
+                ref.dt, window=window, nperseg=nperseg, overlap=overlap)
+            min_navg = navg if min_navg is None else min(min_navg, navg)
+            freqplots.draw_transmissibility(
+                ax1, ax2, f, est, core.coherence_confidence_limit(navg),
+                SERIES_COLORS[li % len(SERIES_COLORS)],
+                core.LOCATION_NAMES[li], self.spec_plot.estimators)
+        if min_navg is not None and min_navg >= 2:
+            ax2.axhline(core.coherence_confidence_limit(min_navg),
+                        color='#c0392b', lw=1.0, ls='--',
+                        label='95% confidence limit')
+        ax1.axhline(1.0, color='#6c757d', lw=0.6, ls=':')
+        ax1.set_xlim(0, core.LOWPASS_HZ)
+        ax2.set_xlim(0, core.LOWPASS_HZ)
+        if logy:
+            ax1.set_yscale('log')
+        references.draw_references(ax1, self.spec_plot.references,
+                                   core.LOWPASS_HZ)
+        ax1.set_ylabel('|H1| (output / reference)')
+        ax1.set_title(f'Transmissibility from {core.LOCATION_NAMES[ref_i]} - '
+                      f'{core.AXIS_NAMES[axis]}')
+        if ax1.get_legend_handles_labels()[0]:
+            ax1.legend(fontsize=8)
+        ax2.set_ylim(0, 1.05)
+        ax2.set_xlabel('Frequency [Hz]')
+        ax2.set_ylabel(r'Coherence $\gamma^2$')
+        if ax2.get_legend_handles_labels()[0]:
+            ax2.legend(fontsize=8)
+        if min_navg is None:
+            note = ("No other contact point shares the reference's sample "
+                    'rate and length, so no pair could be compared.')
+        elif min_navg < 4:
+            note = (f'Only {min_navg} averaged segment(s): H1 and coherence '
+                    'are not yet meaningful. Shorten the segment length.')
+        else:
+            note = (f'H1 = Gxy/Gxx from {min_navg} averaged Welch segments. '
+                    'Solid line: frequencies where coherence exceeds the '
+                    '95% confidence limit (the only ones to trust); faint '
+                    'line: below the limit. Values above 1 mean the output '
+                    'point amplifies the reference.')
+            extra = freqplots.estimator_note(self.spec_plot.estimators)
+            if extra:
+                note += ' ' + extra
+        self.spec_note.setText(note)
+        self.spec_plot.finish(ax1, ax2)
 
     def _plot_srs(self, res, logy):
         ax, = self.spec_plot.axes()
@@ -1528,6 +1986,32 @@ class MainWindow(QMainWindow):
                     'single-DOF system, not a frequency-domain integration '
                     'of the signal.')
         self.spec_note.setText(note)
+        self.spec_plot.finish(ax)
+
+    def _plot_timeseries_raw(self, res):
+        ax, = self.spec_plot.axes()
+        names = list(res.excitations)
+        axis = self.spec_axis.currentData()
+        loc_i = self._selected(self.spec_loc, 4)
+        if not loc_i:
+            loc_i = [0]
+        for li in loc_i:
+            exc = res.excitations[names[li]]
+            sig = exc.accel[:, axis]
+            dt = exc.dt
+            stride = max(1, len(sig) // 500_000)
+            t = np.arange(0, len(sig), stride) * dt
+            ax.plot(t, sig[::stride], lw=0.5,
+                    color=SERIES_COLORS[li % len(SERIES_COLORS)],
+                    label=core.LOCATION_NAMES[li])
+        ax.set_xlabel('Time [s]')
+        ax.set_ylabel(f'Raw acceleration — {core.AXIS_NAMES[axis]} [m/s²]')
+        ax.set_title('Raw input acceleration vs time (not filtered, not conditioned)')
+        ax.legend(fontsize=8)
+        self.spec_note.setText(
+            'Informative plot. Shows the raw excitation signal as loaded, '
+            'before any weighting or spine TF processing. Downsampled to '
+            '≤ 500 000 points for display.')
         self.spec_plot.finish(ax)
 
     def update_time(self):
@@ -1736,6 +2220,237 @@ class MainWindow(QMainWindow):
             return
         self.status(f'Results written to {Path(path).name}')
 
+    # ------------------------------------------------------------------
+    def export_pdf(self):
+        """Exporta PDF: página de resultados (tabela R^A) + gráficos selecionados."""
+        if self.assessment is None:
+            return
+        import matplotlib.pyplot as plt
+        import matplotlib.patches as mp
+        from matplotlib.backends.backend_pdf import PdfPages
+        from datetime import datetime as _dt
+        from PySide6.QtCore import Qt as _Qt
+
+        # ── Diálogo: metadados + seleção de gráficos ─────────────────
+        dlg = QDialog(self)
+        dlg.setWindowTitle('Exportar PDF — Annex A / Annex E')
+        dlg.setMinimumWidth(520)
+        vl = QVBoxLayout(dlg)
+        vl.setSpacing(10)
+        vl.setContentsMargins(16, 16, 16, 12)
+
+        _lbl_info = QLabel('Informações para o relatório')
+        _lbl_info.setStyleSheet('font-weight: bold; font-size: 13px;')
+        vl.addWidget(_lbl_info)
+        from PySide6.QtWidgets import QLineEdit, QFrame, QProgressDialog
+        fm = QFormLayout()
+        fm.setContentsMargins(0, 0, 0, 0)
+        meta_fields = {}
+        for key, label, placeholder in [
+            ('subject_id', 'Identificação do sujeito', ''),
+            ('date', 'Data da medição', _dt.today().strftime('%Y-%m-%d')),
+            ('operator', 'Operador', ''),
+        ]:
+            le = QLineEdit()
+            le.setText(placeholder)
+            fm.addRow(label, le)
+            meta_fields[key] = le
+        vl.addLayout(fm)
+
+        sep = QFrame(); sep.setFrameShape(QFrame.HLine)
+        sep.setStyleSheet('color: #c4d0e4;')
+        vl.addWidget(sep)
+
+        _lbl_plots = QLabel('Gráficos a incluir (além da tabela de resultados)')
+        _lbl_plots.setStyleSheet('font-weight: bold;')
+        vl.addWidget(_lbl_plots)
+        plot_options = [
+            ('Frequency domain: acceleration spectrum (Welch/Hann)', 0),
+            ('Frequency domain: transfer functions', 3),
+            ('Frequency domain: compressive force spectrum', 2),
+            ('Risk vs daily dose', None),
+        ]
+        checks = []
+        cb_welch = QCheckBox(plot_options[0][0]); cb_welch.setChecked(True)
+        checks.append((cb_welch, 'spec', 0))
+        vl.addWidget(cb_welch)
+        cb_tf = QCheckBox(plot_options[1][0]); cb_tf.setChecked(False)
+        checks.append((cb_tf, 'spec', 3))
+        vl.addWidget(cb_tf)
+        cb_force = QCheckBox(plot_options[2][0]); cb_force.setChecked(False)
+        checks.append((cb_force, 'spec', 2))
+        vl.addWidget(cb_force)
+        cb_time = QCheckBox('Time domain: compression peaks'); cb_time.setChecked(False)
+        vl.addWidget(cb_time)
+
+        sep2 = QFrame(); sep2.setFrameShape(QFrame.HLine)
+        sep2.setStyleSheet('color: #c4d0e4;')
+        vl.addWidget(sep2)
+
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        btns.button(QDialogButtonBox.StandardButton.Ok).setText('Exportar PDF')
+        btns.accepted.connect(dlg.accept)
+        btns.rejected.connect(dlg.reject)
+        vl.addWidget(btns)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        meta = {k: v.text().strip() for k, v in meta_fields.items()}
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, 'Export PDF report', 'iso2631-5_report.pdf', 'PDF (*.pdf)')
+        if not path:
+            return
+
+        import matplotlib as _mpl
+        _rc_save = {k: _mpl.rcParams[k] for k in ['font.family']}
+        prog = None
+        try:
+            _mpl.rcParams['font.family'] = 'serif'
+
+            # ── Página 1: tabela de resultados (A4 retrato) ───────────────
+            a = self.assessment
+            BLACK = 'black'; WHITE = 'white'; GREY = '#f2f2f2'
+            RULE  = '#333333'; TXT = 'black'; MUTED = '#555555'
+            FOOTER_Y = 0.024
+
+            fig = plt.figure(figsize=(8.27, 11.69))
+            fig.patch.set_facecolor(WHITE)
+            ax = fig.add_axes([0, 0, 1, 1])
+            ax.set_xlim(0, 1); ax.set_ylim(0, 1); ax.axis('off')
+
+            def R(x, y, w, h, fc, ec=None, lw=0.5):
+                if y < FOOTER_Y:
+                    return
+                ax.add_patch(mp.Rectangle(
+                    (x, y), w, h, facecolor=fc,
+                    edgecolor=(ec or fc), linewidth=lw,
+                    transform=ax.transAxes, clip_on=False, zorder=1))
+
+            def T(x, y, s, **kw):
+                if y < FOOTER_Y:
+                    return
+                ax.text(x, y, s, transform=ax.transAxes, clip_on=False,
+                        zorder=2, **kw)
+
+            def hline(y, lw=0.8, color=RULE):
+                ax.axhline(y, lw=lw, color=color, clip_on=False, zorder=1)
+
+            # Cabeçalho
+            R(0, 0.960, 1, 0.040, BLACK)
+            T(0.015, 0.980, 'Avaliador de Vibração Humana — Annex A / Annex E (ISO 2631-5)',
+              color=WHITE, fontsize=9.5, fontweight='bold', va='center')
+            T(0.985, 0.980, _dt.now().strftime('%Y-%m-%d  %H:%M'),
+              color='#cccccc', fontsize=7.5, va='center', ha='right')
+            hline(0.960, lw=1.2, color=BLACK)
+
+            meta_str = '  ·  '.join(v for v in [
+                meta.get('subject_id'), meta.get('date'), meta.get('operator')] if v)
+            if meta_str:
+                T(0.015, 0.948, meta_str, color=MUTED, fontsize=8, va='center')
+                hline(0.934, lw=0.5)
+
+            y = 0.918
+            T(0.015, y, 'Resultado — Risco Espinal (R^A)',
+              color=BLACK, fontsize=9, fontweight='bold', va='bottom')
+            hline(y - 0.004, lw=0.8)
+            y -= 0.024
+
+            from .theme import OK_COLOR, WARN_COLOR, BAD_COLOR
+            ra_colour = (OK_COLOR if a.max_R < core.RISK_LOW else
+                         BAD_COLOR if a.max_R > core.RISK_HIGH else WARN_COLOR)
+            T(0.015, y, f'Rᴀ máximo = {a.max_R:.3f}   ({core.DISC_NAMES[a.critical_level]})',
+              color=ra_colour, fontsize=14, fontweight='bold', va='top')
+            y -= 0.042
+
+            # Tabela por nível de disco
+            T(0.015, y, 'Rᴀ por nível de disco',
+              color=BLACK, fontsize=8.5, fontweight='bold', va='bottom')
+            hline(y - 0.003, lw=0.6)
+            y -= 0.010
+
+            headers = ['Disco', 'S_d^A [MPa]', 'S_stat [MPa]', 'R^A']
+            col_x = [0.015, 0.30, 0.55, 0.76]
+            ROW_H = 0.024
+            R(0, y - ROW_H, 1, ROW_H, GREY, RULE, 0.4)
+            for cx, h in zip(col_x, headers):
+                T(cx, y - ROW_H * 0.55, h, color=BLACK, fontsize=7.5,
+                  va='center', fontweight='bold')
+            y -= ROW_H
+
+            for ri in range(self.table.rowCount()):
+                items = [self.table.item(ri, c) for c in range(self.table.columnCount())]
+                if not any(it and it.text().strip() for it in items):
+                    continue
+                bg = GREY if ri % 2 == 0 else WHITE
+                R(0, y - ROW_H, 1, ROW_H, bg, RULE, 0.3)
+                ra_item = self.table.item(ri, 3)
+                try:
+                    r_val = float(ra_item.text()) if ra_item else 0.0
+                except ValueError:
+                    r_val = 0.0
+                clr = (OK_COLOR if r_val < core.RISK_LOW else
+                       BAD_COLOR if r_val > core.RISK_HIGH else WARN_COLOR)
+                for ci, (cx, it) in enumerate(zip(col_x, items)):
+                    txt = it.text() if it else ''
+                    T(cx, y - ROW_H * 0.55, txt,
+                      color=clr if ci == 3 else TXT, fontsize=7.5, va='center',
+                      fontweight='bold' if ci == 3 else 'normal')
+                y -= ROW_H
+
+            # Rodapé
+            hline(FOOTER_Y, lw=0.6)
+            T(0.015, FOOTER_Y / 2, 'Avaliador de Vibração Humana · ISO 2631-5 Annex A / Annex E',
+              color=MUTED, fontsize=6.5, va='center')
+            T(0.985, FOOTER_Y / 2, 'GRAVI-SH · UFMG',
+              color=MUTED, fontsize=6.5, ha='right', va='center')
+
+            prog = QProgressDialog('Gerando PDF…', '', 0, 0, self)
+            prog.setWindowTitle('Exportar PDF')
+            prog.setWindowModality(_Qt.WindowModality.WindowModal)
+            prog.setCancelButton(None)
+            prog.setMinimumDuration(0)
+            prog.show()
+            QApplication.processEvents()
+
+            with PdfPages(path) as pdf:
+                pdf.savefig(fig, bbox_inches='tight', dpi=150)
+                plt.close(fig)
+
+                # Páginas de gráficos espectrais (A4 paisagem)
+                orig_spec_kind = self.spec_kind.currentIndex()
+                orig_spec_size = self.spec_plot.figure.get_size_inches()
+                for cb, kind, idx in checks:
+                    if not cb.isChecked():
+                        continue
+                    if kind == 'spec':
+                        self.spec_kind.setCurrentIndex(idx)
+                        self.update_spectra()
+                        self.spec_plot.figure.set_size_inches(11.69, 8.27)
+                        pdf.savefig(self.spec_plot.figure, bbox_inches='tight', dpi=150)
+                        self.spec_plot.figure.set_size_inches(*orig_spec_size)
+                self.spec_kind.setCurrentIndex(orig_spec_kind)
+                self.update_spectra()
+
+                # Página de domínio do tempo
+                if cb_time.isChecked():
+                    self.update_time()
+                    orig_time_size = self.time_plot.figure.get_size_inches()
+                    self.time_plot.figure.set_size_inches(11.69, 8.27)
+                    pdf.savefig(self.time_plot.figure, bbox_inches='tight', dpi=150)
+                    self.time_plot.figure.set_size_inches(*orig_time_size)
+
+        except Exception as _e:
+            QMessageBox.critical(self, 'Erro ao exportar PDF', str(_e))
+            return
+        finally:
+            if prog is not None:
+                prog.close()
+            _mpl.rcParams.update(_rc_save)
+
+        self.status(f'PDF report saved to {Path(path).name}.')
+
 
 def asset(name):
     base = Path(sys._MEIPASS) if getattr(sys, 'frozen', False) \
@@ -1750,6 +2465,8 @@ def data_dir():
 
 
 def main():
+    from . import plot_style
+    plot_style.apply()
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     icon = QIcon(str(asset('icon.png')))

@@ -4,11 +4,29 @@ As cores sao todas explicitas, de propósito: sem isso o Qt herda o tema do
 sistema operacional e, em Windows no modo escuro, o texto claro do tema cai em
 cima dos fundos claros da folha de estilo e some.
 """
+import atexit as _atexit
+import os as _os
+import tempfile as _tempfile
+
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QPalette
 
 ACCENT = '#1f6feb'
 ACCENT_DARK = '#1a5fca'
+
+# Checkmark SVG gravado em arquivo temporario no startup; o Qt nao renderiza
+# data URIs confiavelmente no image: de ::indicator no Windows.
+_svg_check_bytes = (
+    b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 13 13">'
+    b'<polyline points="2.5,6.5 5.5,9.5 10.5,3.5" stroke="white"'
+    b' stroke-width="1.8" fill="none" stroke-linecap="round"'
+    b' stroke-linejoin="round"/></svg>'
+)
+_tf = _tempfile.NamedTemporaryFile(suffix='.svg', delete=False)
+_tf.write(_svg_check_bytes)
+_tf.close()
+_atexit.register(_os.unlink, _tf.name)
+_CHECKMARK = 'url("{}")'.format(_tf.name.replace('\\', '/'))
 OK_COLOR = '#1b7a33'
 WARN_COLOR = '#b25c00'
 BAD_COLOR = '#b3261e'
@@ -114,8 +132,14 @@ QCheckBox::indicator {{
 QCheckBox::indicator:checked {{
     background: {ACCENT};
     border: 1px solid {ACCENT_DARK};
+    image: {_CHECKMARK};
 }}
 QCheckBox::indicator:hover {{ border-color: {ACCENT}; }}
+QCheckBox::indicator:checked:disabled {{
+    background: #bcc3ca;
+    border-color: #bcc3ca;
+    image: {_CHECKMARK};
+}}
 QCheckBox::indicator:disabled, QRadioButton::indicator:disabled {{
     background: #eceff1; border-color: #bcc3ca;
 }}
