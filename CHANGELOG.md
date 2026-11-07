@@ -4,6 +4,8 @@
 
 ## 2026-11-07 — v3.1.2 — Remoção dos dados de função de transferência (conformidade ISO)
 
+> Histórico do GitHub reescrito com `git filter-repo` + force-push: `.npz` removidos de todos os commits anteriores.
+
 ### Decisão
 
 **Decisão do usuário (2026-11-07):** "Código sem dados ISO." Os arquivos `.npz` derivados da ISO 2631-5:2018 (funções de transferência e forças estáticas) foram removidos do controle de versão por serem material protegido por direitos autorais da ISO.
