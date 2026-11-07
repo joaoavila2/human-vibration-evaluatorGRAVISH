@@ -45,12 +45,21 @@ caminho `ACC` no topo do arquivo para a sua pasta de acelerações).
 
 ```bash
 pip install -r requirements.txt
-python tools/build_data.py ISO-DIS_2631-5_Transferfunctions_used_in_the_software_MATLAB_format.zip data/
-python run.py
 ```
 
-A conversão dos dados roda uma vez só. Ela transforma os 172 MB de CSV do pacote
-MATLAB em 35 MB de `.npz`, e depois disso o zip original não é mais necessário.
+As funções de transferência da ISO 2631-5:2018 (Annex E) não estão incluídas no
+repositório por serem material protegido por direitos autorais. Para gerá-las,
+obtenha o pacote MATLAB junto com a norma e execute:
+
+```bash
+python tools/build_data.py ISO-DIS_2631-5_Transferfunctions_used_in_the_software_MATLAB_format.zip data/
+```
+
+A conversão roda uma vez só e gera ~35 MB de `.npz` em `data/`. Depois:
+
+```bash
+python run.py
+```
 
 ## Executável
 

@@ -2,7 +2,7 @@
 
 ---
 
-## 2026-11-07 — Remoção dos dados de função de transferência (conformidade ISO)
+## 2026-11-07 — v3.1.2 — Remoção dos dados de função de transferência (conformidade ISO)
 
 ### Decisão
 

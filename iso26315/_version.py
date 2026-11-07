@@ -4,4 +4,4 @@ Bump a cada atualizacao (major.minor.patch): patch para correcoes e
 features pequenas, minor para mudancas maiores, major reservado para
 revisoes grandes de metodologia/formato de dados.
 """
-__version__ = '3.1.1'
+__version__ = '3.1.2'
