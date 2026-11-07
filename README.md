@@ -228,14 +228,9 @@ aceleração-velocidade e degrau ascendente — montado no domínio de Laplace e
 avaliado em `weighting_response`.
 
 Validação contra a Tabela 3 da ISO 2631-1, em bandas de 1/3 de oitava: erro
-relativo mediano de 0,05% no Wk e 0,04% no Wd.
-
-Um ponto merece nota. No Wd a 10 Hz a divergência sobe para 4,9%, mas a causa
-não é a implementação: a coluna de fatores da tabela traz 212, enquanto a coluna
-em dB ao lado traz −13,91 dB, que corresponde a 201,6. Os dois valores da própria
-tabela são inconsistentes entre si, e o cálculo bate com a coluna em dB. Trata-se
-de errata oficial: ISO 2631-1:1997/Amd.1:2010, p. 3, substitui "212" por "202"
-na Tabela B.2, coluna Wd a 10 Hz.
+relativo mediano de 0,05% no Wk e 0,04% no Wd. A implementação segue a
+ISO 2631-1:1997/Amd.1:2010, que corrigiu o valor do Wd a 10 Hz de 212 para 202
+na Tabela B.2.
 
 ### Controle por eixo
 
