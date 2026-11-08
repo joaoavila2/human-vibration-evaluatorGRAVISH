@@ -2,6 +2,13 @@
 
 ---
 
+## 2026-11-07 — v3.1.3 congelada (versão de referência do software)
+
+- DOI da v3.1.3 no Zenodo: **10.5281/zenodo.24046011**, gravado no README e no `CITATION.cff`.
+- A v3.1.3 (tag `v3.1.3`) fica congelada como a versão de referência do software. Mudanças novas seguem na v3.2 (pasta `v3.2`).
+
+---
+
 ## 2026-11-07 — v3.1.3 — Abre sem os dados ISO; licença e citação
 
 - `core.TransferFunctionStore`: `static_forces.npz` passa a ser carregado na primeira vez que é usado, e não ao abrir a janela. Antes, quem clonasse o repositório sem gerar `data/` não conseguia abrir o programa; agora todas as abas funcionam e só os cálculos dos Anexos A/E mostram o erro (em inglês, como a interface), com o comando `tools/build_data.py` para gerar os dados. A mesma mensagem vale para posturas ausentes.

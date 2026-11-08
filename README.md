@@ -1,6 +1,6 @@
 # Avaliador de Vibração Humana
 
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.24045956.svg)](https://doi.org/10.5281/zenodo.24045956)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.24046011.svg)](https://doi.org/10.5281/zenodo.24046011)
 
 Software de avaliação da exposição humana à vibração de corpo inteiro,
 desenvolvido no GRAVI-SH (Departamento de Engenharia Mecânica, UFMG).
@@ -525,7 +525,7 @@ LICENSE                licença MIT
 
 > Ávila, J. P. R. *Avaliador de Vibração Humana* [software].
 > GRAVI-SH, Universidade Federal de Minas Gerais, 2026.
-> https://doi.org/10.5281/zenodo.24045956
+> https://doi.org/10.5281/zenodo.24046011
 
 Indique a versão usada (mostrada no título da janela). Os metadados de citação
 estão em [`CITATION.cff`](CITATION.cff); o GitHub os exibe no botão
