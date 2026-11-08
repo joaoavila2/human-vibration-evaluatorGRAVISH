@@ -25,7 +25,7 @@ pyz = PYZ(a.pure)
 
 exe = EXE(
     pyz, a.scripts, a.binaries, a.datas, [],
-    name='AvaliadorDeVibracaoHumana-v3.1.2',
+    name='AvaliadorDeVibracaoHumana-v3.1.3',
     debug=False, strip=False, upx=True,
     runtime_tmpdir=None, console=False,
     icon='iso26315/assets/icon.ico',

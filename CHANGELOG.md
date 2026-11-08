@@ -2,6 +2,22 @@
 
 ---
 
+## 2026-11-07 — v3.1.3 — Abre sem os dados ISO; licença e citação
+
+- `core.TransferFunctionStore`: `static_forces.npz` passa a ser carregado na primeira vez que é usado, e não ao abrir a janela. Antes, quem clonasse o repositório sem gerar `data/` não conseguia abrir o programa; agora todas as abas funcionam e só os cálculos dos Anexos A/E mostram o erro (em inglês, como a interface), com o comando `tools/build_data.py` para gerar os dados. A mesma mensagem vale para posturas ausentes.
+- Verificado: janela abre com `data/` vazia; `tests/test_reference.py` (com as acelerações de exemplo da norma) e os testes unitários passam sem mudança de resultado.
+- `LICENSE` (MIT; cobre só o código, não os dados ISO) e `CITATION.cff` (DOI 10.5281/zenodo.24045956).
+- README: comportamento sem dados, seção de licença e citação.
+- `_version.py` e `iso2631-5.spec`: 3.1.2 → 3.1.3.
+
+---
+
+## 2026-11-07 — README reescrito
+
+README revisado por completo contra o código: todas as abas atuais (inclusive Campaign, Live FFT, Visualizador, Processamento em Lote e o protótipo de cadeira de rodas), formatos de entrada, validação dos Anexos A/E e do Anexo C, testes, estrutura do repositório e citação com o DOI do Zenodo (10.5281/zenodo.24045956). Removidas referências ao workflow de CI e ao firmware, que saíram do repositório.
+
+---
+
 ## 2026-11-07 — v3.1.2 — Remoção dos dados de função de transferência (conformidade ISO)
 
 > Histórico do GitHub reescrito com `git filter-repo` + force-push: `.npz` removidos de todos os commits anteriores.

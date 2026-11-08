@@ -1,0 +1,25 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+type: software
+title: "Avaliador de Vibração Humana"
+abstract: >-
+  Python implementation, with graphical interface, of the whole-body vibration
+  risk assessment methods of ISO 2631-5:2018 (Annexes A and E; Clause 5 and
+  Annex C) and of the health and comfort evaluations of ISO 2631-1, NHO-09 and
+  Directive 2002/44/EC. Developed at GRAVI-SH, Federal University of Minas
+  Gerais (UFMG).
+authors:
+  - family-names: "Ávila"
+    given-names: "João Pedro Rosa"
+    affiliation: "GRAVI-SH, Universidade Federal de Minas Gerais"
+version: "3.1.3"
+date-released: "2026-11-07"
+doi: "10.5281/zenodo.24045956"
+license: MIT
+repository-code: "https://github.com/joaoavila2/human-vibration-evaluatorGRAVISH"
+keywords:
+  - whole-body vibration
+  - ISO 2631-5
+  - ISO 2631-1
+  - lumbar spine
+  - occupational health

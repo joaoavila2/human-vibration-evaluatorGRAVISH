@@ -281,20 +281,30 @@ def anthropometry(body_mass, body_height, subclass=1):
 # ----------------------------------------------------------------------
 
 class TransferFunctionStore:
+    # Carregamento sob demanda: sem data/ o programa abre e so' a cadeia dos
+    # Anexos A/E falha, com esta mensagem.
     def __init__(self, data_dir):
         self.dir = Path(data_dir)
         self._cache = {}
-        _sf = self.dir / 'static_forces.npz'
-        if not _sf.exists():
-            raise FileNotFoundError(
-                f'Arquivo {_sf} nao encontrado.\n'
-                'Os dados de funcao de transferencia nao sao distribuidos com o codigo-fonte '
-                '(arquivo derivado da ISO 2631-5:2018, sujeito a direitos autorais).\n'
-                'Para gera-los: (1) obtenha o pacote de funcoes de transferencia com a ISO '
-                '2631-5:2018 (Annex E); (2) coloque o ZIP baixado em tools/; '
-                '(3) execute: python tools/build_data.py'
-            )
-        self.static_forces = np.load(_sf)['static']
+        self._static = None
+
+    def _missing(self, path):
+        return FileNotFoundError(
+            f'Annex A transfer-function data not found: {path}\n'
+            'These files are derived from ISO 2631-5:2018 and are not '
+            'distributed with the source code. Generate them once from the '
+            'MATLAB package supplied with the standard:\n'
+            'python tools/build_data.py '
+            'ISO-DIS_2631-5_Transferfunctions_used_in_the_software_MATLAB_format.zip data/')
+
+    @property
+    def static_forces(self):
+        if self._static is None:
+            path = self.dir / 'static_forces.npz'
+            if not path.exists():
+                raise self._missing(path)
+            self._static = np.load(path)['static']
+        return self._static
 
     def available_postures(self):
         return sorted(int(p.stem.replace('posture', ''))
@@ -304,8 +314,7 @@ class TransferFunctionStore:
         if posture not in self._cache:
             path = self.dir / f'posture{posture}.npz'
             if not path.exists():
-                raise FileNotFoundError(
-                    f'Dados da postura {posture} nao encontrados em {self.dir}.')
+                raise self._missing(path)
             d = np.load(path)
             self._cache[posture] = (d['H'], d['freq'])
         return self._cache[posture]
